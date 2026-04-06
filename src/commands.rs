@@ -60,12 +60,12 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: Arc<tool::ToolMana
     tokio::spawn(async move {
         match cmd {
             Command::Dump { arg } | Command::Dumper { arg } => {
-                if let Err(e) = dump_cmd(bot, msg, arg).await {
+                if let Err(e) = dump_cmd(bot, msg, arg, cfg).await {
                     error!("Error in dump_cmd: {e}");
                 }
             }
             Command::Patch { arg } => {
-                if let Err(e) = patch_cmd(bot, msg, arg).await {
+                if let Err(e) = patch_cmd(bot, msg, arg, tm).await {
                     error!("Error in patch_cmd: {e}");
                 }
             }
@@ -89,7 +89,7 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: Arc<tool::ToolMana
     Ok(())
 }
 
-async fn dump_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, RequestError> {
+async fn dump_cmd(bot: Bot, msg: Message, arg: String, cfg: Arc<config::Config>) -> Result<Message, RequestError> {
     let cmd: Vec<&str> = arg.split_whitespace().collect();
     if cmd.len() != 2 {
         warn!("{}: Dump: Invalid command: {arg}", msg.chat.id);
@@ -104,14 +104,13 @@ async fn dump_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, Reques
         bot.delete_message(msg.chat.id, msg.id).await?;
         return Ok(msg);
     }
-    let config = config::load_config().unwrap_or_default();
     let url = cmd[0].to_string();
     let partition = cmd[1].to_string();
     let mut unsupported_partitions: Vec<String> = Vec::new();
     let partitions = partition.split(',').collect::<Vec<_>>();
-    if !config.supported_partitions.is_empty() {
+    if !cfg.supported_partitions.is_empty() {
         let _ = partitions.iter().map(|p| {
-            if config.supported_partitions.contains(&p.to_string()) {
+            if cfg.supported_partitions.contains(&p.to_string()) {
                 unsupported_partitions.push(p.to_string());
             }
         });
@@ -263,7 +262,7 @@ async fn list_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, Reques
         .await
 }
 
-async fn patch_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, RequestError> {
+async fn patch_cmd(bot: Bot, msg: Message, arg: String, tm: Arc<tool::ToolManager>) -> Result<Message, RequestError> {
     let args = arg.split_whitespace().collect::<Vec<_>>();
     let url = args[0];
     let patch_partition = args[1];
@@ -279,6 +278,7 @@ async fn patch_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, Reque
         url.to_string(),
         patch_partition.to_string(),
         patch_method.to_string(),
+        tm,
     )
     .await
     {

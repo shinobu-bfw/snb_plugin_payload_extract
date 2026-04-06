@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 
 enum PatchMethod {
     KernelSU,
@@ -55,6 +56,7 @@ impl PatchPartition {
 }
 
 struct Patch {
+    tm: Arc<crate::tool::ToolManager>,
     method: PatchMethod,
     partition: PatchPartition,
 }
@@ -67,7 +69,6 @@ pub struct PatchedFile {
 
 impl Patch {
     fn patch(&self, dir: PathBuf) -> Result<PatchedFile> {
-        let tm = ToolManager::default();
         let mut patched_name = format!(
             "{}_patched_{}",
             self.method.to_string(),
@@ -76,8 +77,8 @@ impl Patch {
 
         match &self.method {
             PatchMethod::KernelSU => {
-                let ksud = tm.get_ksud().get();
-                let magiskboot = tm.get_magiskboot().get();
+                let ksud = self.tm.get_ksud().get();
+                let magiskboot = self.tm.get_magiskboot().get();
                 let (kmi, kernel_version) = get_kmi(magiskboot.clone(), dir.clone())?;
 
                 patched_name = format!("{patched_name}-{kmi}.img");
@@ -86,7 +87,7 @@ impl Patch {
                     "patching {} with kmi: {}, tool: {}",
                     self.partition.get_partition_name(),
                     kmi,
-                    tm.get_ksud().get().display()
+                    self.tm.get_ksud().get().display()
                 );
 
                 let _ = Command::new(ksud)
@@ -120,11 +121,13 @@ pub async fn patch_boot(
     url: String,
     patch_partition: String,
     patch_method: String,
+    tm: Arc<crate::tool::ToolManager>
 ) -> Result<PatchedFile> {
     info!("Patching boot: {url} {patch_partition} {patch_method}");
     let patch = Patch {
         method: PatchMethod::from(&patch_method)?,
         partition: PatchPartition::from(&patch_partition)?,
+        tm,
     };
     let mut images = Vec::new();
     images.push(patch.partition.get_partition_name());
