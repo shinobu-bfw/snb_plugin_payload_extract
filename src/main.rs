@@ -25,6 +25,7 @@ async fn main() -> Result<()> {
     info!("Starting command bot...");
     let client = net::default_reqwest_settings().timeout(Duration::from_secs(120));
     let bot = Bot::with_client(config.token, client.build()?).set_api_url(config.api_url.parse()?);
+    let tm = std::sync::Arc::new(tm);
 
     let handler = Update::filter_message()
         .branch(dptree::entry().filter_command::<Command>().endpoint(answer));

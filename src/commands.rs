@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use crate::patch_boot::patch_boot;
 use crate::utils::to_tg_md;
 use crate::{config, payload, tool};
@@ -55,7 +56,7 @@ pub enum Command {
     Update,
 }
 
-pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: tool::ToolManager) -> ResponseResult<()> {
+pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: Arc<tool::ToolManager>) -> ResponseResult<()> {
     tokio::spawn(async move {
         match cmd {
             Command::Dump { arg } | Command::Dumper { arg } => {
@@ -361,7 +362,7 @@ async fn help_cmd(bot: Bot, msg: Message) -> Result<Message, RequestError> {
         .await
 }
 
-async fn update_cmd(bot: Bot, msg: Message, tm: tool::ToolManager) -> Result<Message, RequestError> {
+async fn update_cmd(bot: Bot, msg: Message, tm: Arc<tool::ToolManager>) -> Result<Message, RequestError> {
     let status_msg = bot
         .send_message(msg.chat.id, "Updating tools...")
         .reply_to(msg.id)
