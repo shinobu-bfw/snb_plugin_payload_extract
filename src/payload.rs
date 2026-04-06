@@ -1,12 +1,13 @@
 use crate::utils;
 use anyhow::Result;
 use log::{debug, info};
-use payload_dumper::extractor::remote::{extract_partition_remote_zip, list_partitions_remote_zip};
-use serde_json::Value;
+use payload_dumper::payload::payload_dumper::{dump_partition as payload_dump_partition, NoOpReporter};
+use payload_dumper::payload::payload_parser::parse_remote_payload;
+use payload_dumper::readers::remote_zip_reader::RemoteAsyncZipPayloadReader;
+use payload_dumper::structs::PartitionUpdate;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{fs, thread};
-use tokio::sync::oneshot;
+use std::fs;
 
 pub struct PartitionInfo {
     pub name: String,
@@ -27,43 +28,60 @@ pub async fn dump_partition(
     fs::create_dir_all(&temp_dir)?;
     info!("Dumping partitions to {}", temp_dir.display());
 
-    let rom_info = get_rom_info(url.clone()).await?;
-    let all_partitions_info = rom_info["partitions"].as_array().unwrap();
+    let (manifest, data_offset, _) = parse_remote_payload(
+        url.clone(),
+        Some(utils::USER_AGENT),
+        None,
+        None,
+    )
+    .await?;
+    let block_size = u64::from(manifest.block_size.unwrap_or(4096));
 
     let mut files = Vec::new();
-    let mut receivers = Vec::new();
+    let mut tasks = Vec::new();
 
     for p_name in partitions {
         let out_put = temp_dir.join(format!("{p_name}.img"));
-        if let Some(part_info) = all_partitions_info.iter().find(|p| p["name"] == p_name) {
+        if let Some(partition_update) = manifest
+            .partitions
+            .iter()
+            .find(|p| p.partition_name == p_name)
+            .cloned()
+        {
             let info = PartitionInfo {
                 name: p_name.clone(),
-                size: part_info["size_bytes"].as_u64().unwrap_or(0),
-                hash: part_info["hash"].as_str().map(|s| s.to_string()),
+                size: partition_size_bytes(&partition_update),
+                hash: partition_hash(&partition_update),
                 path: out_put.clone(),
             };
             files.push(info);
 
             let url_clone = url.clone();
-            let (tx, rx) = oneshot::channel();
-            thread::spawn(move || {
-                let result = extract_partition_remote_zip(
+            tasks.push(tokio::spawn(async move {
+                let reader = RemoteAsyncZipPayloadReader::new(
                     url_clone,
-                    &p_name,
+                    Some(utils::USER_AGENT),
+                    None,
+                    None,
+                )
+                .await?;
+                let reporter = NoOpReporter;
+                payload_dump_partition(
+                    &partition_update,
+                    data_offset,
+                    block_size,
                     out_put,
-                    Option::from(utils::USER_AGENT),
+                    &reader,
+                    &reporter,
                     None,
-                    None,
-                    None::<PathBuf>,
-                );
-                let _ = tx.send(result);
-            });
-            receivers.push(rx);
+                )
+                .await
+            }));
         }
     }
 
-    for rx in receivers {
-        rx.await??;
+    for task in tasks {
+        task.await??;
     }
 
     Ok((files, temp_dir))
@@ -71,22 +89,22 @@ pub async fn dump_partition(
 
 pub async fn list_image(url: String) -> Result<String> {
     info!("Listing image: {url}");
-    let info = get_rom_info(url).await?;
-    let partitions = info["partitions"].as_array().unwrap();
+    let (manifest, _, _) = parse_remote_payload(url, Some(utils::USER_AGENT), None, None).await?;
+    let partitions = &manifest.partitions;
     let partitions_str = partitions
         .iter()
         .map(|p| {
             format!(
                 "  - {}: {}",
-                p["name"].as_str().unwrap(),
-                p["size_readable"].as_str().unwrap()
+                p.partition_name,
+                format_size(partition_size_bytes(p))
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let total = info["total_partitions"].as_u64().unwrap();
-    let size = info["total_size_readable"].as_str().unwrap();
-    let security_patch = info["security_patch_level"].as_str().unwrap();
+    let total = partitions.len() as u64;
+    let size = format_size(partitions.iter().map(partition_size_bytes).sum());
+    let security_patch = manifest.security_patch_level.as_deref().unwrap_or("N/A");
     let ret = format!(
         "Total size: {size}\nSecurity patch level: {security_patch}\nTotal partitions: {total}\nPartitions:\n{partitions_str}"
     );
@@ -94,16 +112,39 @@ pub async fn list_image(url: String) -> Result<String> {
     Ok(ret)
 }
 
-async fn get_rom_info(url: String) -> Result<Value> {
-    info!("Getting rom info: {url}");
+fn partition_size_bytes(partition: &PartitionUpdate) -> u64 {
+    partition
+        .new_partition_info
+        .as_ref()
+        .and_then(|info| info.size)
+        .unwrap_or(0)
+}
 
-    let (tx, rx) = oneshot::channel();
-    thread::spawn(move || {
-        let result = list_partitions_remote_zip(url, Option::from(utils::USER_AGENT), None);
-        let _ = tx.send(result);
-    });
+fn partition_hash(partition: &PartitionUpdate) -> Option<String> {
+    partition
+        .new_partition_info
+        .as_ref()
+        .and_then(|info| info.hash.as_ref())
+        .map(|hash_bytes| hash_bytes.iter().map(|byte| format!("{:02x}", byte)).collect())
+}
 
-    let partition_list = rx.await??;
+fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
 
-    Ok(serde_json::from_str(partition_list.json.as_str())?)
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+
+    let mut value = bytes as f64;
+    let mut unit_index = 0usize;
+    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+
+    if unit_index == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit_index])
+    }
 }
