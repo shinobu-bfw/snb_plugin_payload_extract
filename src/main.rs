@@ -30,6 +30,7 @@ async fn main() -> Result<()> {
         .branch(dptree::entry().filter_command::<Command>().endpoint(answer));
 
     Dispatcher::builder(bot, handler)
+        .dependencies(dptree::deps![tm])
         .enable_ctrlc_handler()
         .build()
         .dispatch()

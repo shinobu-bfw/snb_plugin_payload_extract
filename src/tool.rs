@@ -240,6 +240,13 @@ impl ToolManager {
         Ok(())
     }
 
+    pub async fn update(&self) -> Result<()> {
+        debug!("Updating tools");
+        self.ksud.get_latest().await?;
+        self.magiskboot.get_latest().await?;
+        Ok(())
+    }
+
     pub fn get_magiskboot(&self) -> MAGISKBOOT {
         self.magiskboot.clone()
     }

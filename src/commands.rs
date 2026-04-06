@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use crate::patch_boot::patch_boot;
 use crate::utils::to_tg_md;
-use crate::{config, payload};
+use crate::{config, payload, tool};
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use std::time::Duration;
@@ -27,6 +27,9 @@ const HELP_MESSAGE: &str = r#"*[Payload dumper bot written in rust](https://gith
 >    `partition`: boot\(b\), init\_boot\(ib\), vendor\_boot\(vb\)
 >    `method`: kernelsu\(k, ksu\), magisk\(m\)
 >
+> `/update`
+>   Update ksud and magiskboot tools to latest version
+>
 > `/help`
 >   Show this help msg\."#;
 
@@ -48,9 +51,11 @@ pub enum Command {
     Help,
     #[command(description = "Start command")]
     Start,
+    #[command(description = "Update ksud and magiskboot tools")]
+    Update,
 }
 
-pub async fn answer(bot: Bot, msg: Message, cmd: Command) -> ResponseResult<()> {
+pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: tool::ToolManager) -> ResponseResult<()> {
     tokio::spawn(async move {
         match cmd {
             Command::Dump { arg } | Command::Dumper { arg } => {
@@ -71,6 +76,11 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command) -> ResponseResult<()> 
             Command::Help { .. } | Command::Start { .. } => {
                 if let Err(e) = help_cmd(bot, msg).await {
                     error!("Error in help_cmd: {e}");
+                }
+            }
+            Command::Update => {
+                if let Err(e) = update_cmd(bot, msg, tm).await {
+                    error!("Error in update_cmd: {e}");
                 }
             }
         };
@@ -349,4 +359,31 @@ async fn help_cmd(bot: Bot, msg: Message) -> Result<Message, RequestError> {
         .parse_mode(ParseMode::MarkdownV2)
         .reply_to(msg.id)
         .await
+}
+
+async fn update_cmd(bot: Bot, msg: Message, tm: tool::ToolManager) -> Result<Message, RequestError> {
+    let status_msg = bot
+        .send_message(msg.chat.id, "Updating tools...")
+        .reply_to(msg.id)
+        .await?;
+    match tm.update().await {
+        Ok(()) => {
+            bot.edit_message_text(
+                status_msg.chat.id,
+                status_msg.id,
+                "Tools updated successfully!",
+            )
+            .await?;
+        }
+        Err(e) => {
+            error!("Failed to update tools: {e}");
+            bot.edit_message_text(
+                status_msg.chat.id,
+                status_msg.id,
+                format!("Failed to update tools: {e}"),
+            )
+            .await?;
+        }
+    }
+    Ok(status_msg)
 }
