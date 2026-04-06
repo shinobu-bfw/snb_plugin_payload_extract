@@ -56,7 +56,7 @@ pub enum Command {
     Update,
 }
 
-pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: Arc<tool::ToolManager>) -> ResponseResult<()> {
+pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: Arc<tool::ToolManager>, cfg: Arc<config::Config>) -> ResponseResult<()> {
     tokio::spawn(async move {
         match cmd {
             Command::Dump { arg } | Command::Dumper { arg } => {
@@ -80,7 +80,7 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: Arc<tool::ToolMana
                 }
             }
             Command::Update => {
-                if let Err(e) = update_cmd(bot, msg, tm).await {
+                if let Err(e) = update_cmd(bot, msg, tm, cfg).await {
                     error!("Error in update_cmd: {e}");
                 }
             }
@@ -362,7 +362,18 @@ async fn help_cmd(bot: Bot, msg: Message) -> Result<Message, RequestError> {
         .await
 }
 
-async fn update_cmd(bot: Bot, msg: Message, tm: Arc<tool::ToolManager>) -> Result<Message, RequestError> {
+async fn update_cmd(bot: Bot, msg: Message, tm: Arc<tool::ToolManager>, cfg: Arc<config::Config>) -> Result<Message, RequestError> {
+    let sender_id = match msg.from.as_ref() {
+        Some(user) => user.id.0 as i64,
+        None => {
+            warn!("{}: Update: No sender info, ignoring", msg.chat.id);
+            return Ok(msg);
+        }
+    };
+    if !cfg.admin_users.is_empty() && !cfg.admin_users.contains(&sender_id) {
+        warn!("{}: Update: Unauthorized user {sender_id}, ignoring", msg.chat.id);
+        return Ok(msg);
+    }
     let status_msg = bot
         .send_message(msg.chat.id, "Updating tools...")
         .reply_to(msg.id)

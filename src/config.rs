@@ -14,6 +14,8 @@ pub struct Config {
     rust_log: String,
     #[serde(rename = "SUPPORTED_PARTITIONS")]
     pub supported_partitions: Vec<String>,
+    #[serde(rename = "ADMIN_USERS", default)]
+    pub admin_users: Vec<i64>,
 }
 
 impl Default for Config {
@@ -36,6 +38,7 @@ impl Default for Config {
                 "vendor_boot".to_string(),
                 "vendor_dlkm".to_string(),
             ],
+            admin_users: vec![],
         }
     }
 }
