@@ -139,16 +139,32 @@ impl Patch {
                     .current_dir(dir.clone())
                     .arg("-lc")
                     .arg(format!(
-                        "set -e; export BOOTMODE=true SOURCEDMODE=true ABI='{}' API='34'; . ./util_functions.sh; . ./boot_patch.sh '{}'",
+                        "set -e; export BOOTMODE=true SOURCEDMODE=true ABI='{}' API='34' PREINITDEVICE='metadata'; . ./util_functions.sh; . ./boot_patch.sh '{}'",
                         magiskboot.get_android_abi(),
                         image_name
                     ))
                     .output()?;
 
                 if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     bail!(
-                        "magisk boot_patch failed: {}",
-                        String::from_utf8_lossy(&output.stderr).trim()
+                        "magisk boot_patch failed: {}{}{}",
+                        if stderr.is_empty() {
+                            ""
+                        } else {
+                            stderr.as_str()
+                        },
+                        if !stderr.is_empty() && !stdout.is_empty() {
+                            "\n"
+                        } else {
+                            ""
+                        },
+                        if stdout.is_empty() {
+                            ""
+                        } else {
+                            stdout.as_str()
+                        }
                     );
                 }
 
