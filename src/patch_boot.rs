@@ -121,7 +121,7 @@ pub async fn patch_boot(
     url: String,
     patch_partition: String,
     patch_method: String,
-    tm: Arc<crate::tool::ToolManager>
+    tm: Arc<crate::tool::ToolManager>,
 ) -> Result<PatchedFile> {
     info!("Patching boot: {url} {patch_partition} {patch_method}");
     let patch = Patch {

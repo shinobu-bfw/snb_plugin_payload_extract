@@ -24,7 +24,8 @@ async fn main() -> Result<()> {
     std::fs::remove_dir_all("tmp").ok();
     info!("Starting command bot...");
     let client = net::default_reqwest_settings().timeout(Duration::from_secs(120));
-    let bot = Bot::with_client(cfg.token.clone(), client.build()?).set_api_url(cfg.api_url.parse()?);
+    let bot =
+        Bot::with_client(cfg.token.clone(), client.build()?).set_api_url(cfg.api_url.parse()?);
 
     let handler = Update::filter_message()
         .branch(dptree::entry().filter_command::<Command>().endpoint(answer));

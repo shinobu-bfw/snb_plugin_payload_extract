@@ -70,7 +70,7 @@ After building, you can find the executable at `target/release/payload_extract_b
 ## Thanks
 
 - [teloxide](https://github.com/teloxide/teloxide)
-- [payload_dumper](https://github.com/rhythmcache/payload-dumper-rust)
+- [payload_extract_rs](https://github.com/YuKongA/payload_extract_rs)
 - [kernelsu](https://github.com/tiann/KernelSU)
 - [magisk](https://github.com/topjohnwu/Magisk)
 

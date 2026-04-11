@@ -1,13 +1,12 @@
-use crate::utils;
 use anyhow::Result;
 use log::{debug, info};
-use payload_dumper::payload::payload_dumper::{dump_partition as payload_dump_partition, NoOpReporter};
-use payload_dumper::payload::payload_parser::parse_remote_payload;
-use payload_dumper::readers::remote_zip_reader::RemoteAsyncZipPayloadReader;
-use payload_dumper::structs::PartitionUpdate;
+use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::fs;
+
+use payload_extract::extract::{ExtractConfig, extract_partitions};
+use payload_extract::input::{open, open_for_extract};
+use payload_extract::proto::PartitionUpdate;
 
 pub struct PartitionInfo {
     pub name: String,
@@ -20,77 +19,53 @@ pub async fn dump_partition(
     url: String,
     partition: String,
 ) -> Result<(Vec<PartitionInfo>, PathBuf)> {
-    let mut partitions: Vec<String> = partition.split(',').map(|s| s.to_string()).collect();
+    let mut partitions: Vec<String> = partition
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
     partitions.sort();
     partitions.dedup();
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let temp_dir = PathBuf::from("tmp").join(ts.to_string());
-    fs::create_dir_all(&temp_dir)?;
-    info!("Dumping partitions to {}", temp_dir.display());
+    tokio::task::spawn_blocking(move || {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let temp_dir = PathBuf::from("tmp").join(ts.to_string());
+        fs::create_dir_all(&temp_dir)?;
+        info!("Dumping partitions to {}", temp_dir.display());
 
-    let (manifest, data_offset, _) = parse_remote_payload(
-        url.clone(),
-        Some(utils::USER_AGENT),
-        None,
-        None,
-    )
-    .await?;
-    let block_size = u64::from(manifest.block_size.unwrap_or(4096));
+        let payload = open_for_extract(&url, &partitions, false)?;
 
-    let mut files = Vec::new();
-    let mut tasks = Vec::new();
-
-    for p_name in partitions {
-        let out_put = temp_dir.join(format!("{p_name}.img"));
-        if let Some(partition_update) = manifest
-            .partitions
+        let files = payload
+            .partitions()
             .iter()
-            .find(|p| p.partition_name == p_name)
-            .cloned()
-        {
-            let info = PartitionInfo {
-                name: p_name.clone(),
-                size: partition_size_bytes(&partition_update),
-                hash: partition_hash(&partition_update),
-                path: out_put.clone(),
-            };
-            files.push(info);
+            .filter(|p| partitions.iter().any(|name| name == &p.partition_name))
+            .map(|partition_update| PartitionInfo {
+                name: partition_update.partition_name.clone(),
+                size: partition_size_bytes(partition_update),
+                hash: partition_hash(partition_update),
+                path: temp_dir.join(format!("{}.img", partition_update.partition_name)),
+            })
+            .collect::<Vec<_>>();
 
-            let url_clone = url.clone();
-            tasks.push(tokio::spawn(async move {
-                let reader = RemoteAsyncZipPayloadReader::new(
-                    url_clone,
-                    Some(utils::USER_AGENT),
-                    None,
-                    None,
-                )
-                .await?;
-                let reporter = NoOpReporter;
-                payload_dump_partition(
-                    &partition_update,
-                    data_offset,
-                    block_size,
-                    out_put,
-                    &reader,
-                    &reporter,
-                    None,
-                )
-                .await
-            }));
-        }
-    }
+        let config = ExtractConfig {
+            verify_ops: false,
+            threads: 0,
+            quiet: true,
+            source_dir: None,
+            out_config: None,
+        };
 
-    for task in tasks {
-        task.await??;
-    }
+        extract_partitions(&payload, &temp_dir, &partitions, &config)?;
 
-    Ok((files, temp_dir))
+        Ok((files, temp_dir))
+    })
+    .await?
 }
 
 pub async fn list_image(url: String) -> Result<String> {
     info!("Listing image: {url}");
-    let (manifest, _, _) = parse_remote_payload(url, Some(utils::USER_AGENT), None, None).await?;
-    let partitions = &manifest.partitions;
+    let payload = tokio::task::spawn_blocking(move || open(&url, false)).await??;
+    let partitions = payload.partitions();
     let partitions_str = partitions
         .iter()
         .map(|p| {
@@ -104,7 +79,11 @@ pub async fn list_image(url: String) -> Result<String> {
         .join("\n");
     let total = partitions.len() as u64;
     let size = format_size(partitions.iter().map(partition_size_bytes).sum());
-    let security_patch = manifest.security_patch_level.as_deref().unwrap_or("N/A");
+    let security_patch = payload
+        .manifest()
+        .security_patch_level
+        .as_deref()
+        .unwrap_or("N/A");
     let ret = format!(
         "Total size: {size}\nSecurity patch level: {security_patch}\nTotal partitions: {total}\nPartitions:\n{partitions_str}"
     );
@@ -125,7 +104,12 @@ fn partition_hash(partition: &PartitionUpdate) -> Option<String> {
         .new_partition_info
         .as_ref()
         .and_then(|info| info.hash.as_ref())
-        .map(|hash_bytes| hash_bytes.iter().map(|byte| format!("{:02x}", byte)).collect())
+        .map(|hash_bytes| {
+            hash_bytes
+                .iter()
+                .map(|byte| format!("{:02x}", byte))
+                .collect()
+        })
 }
 
 fn format_size(bytes: u64) -> String {

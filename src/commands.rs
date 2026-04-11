@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-use std::sync::Arc;
 use crate::patch_boot::patch_boot;
 use crate::utils::to_tg_md;
 use crate::{config, payload, tool};
 use anyhow::Result;
 use log::{debug, error, info, warn};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use teloxide::macros::BotCommands;
 use teloxide::payloads::SendMessageSetters;
@@ -56,7 +56,13 @@ pub enum Command {
     Update,
 }
 
-pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: Arc<tool::ToolManager>, cfg: Arc<config::Config>) -> ResponseResult<()> {
+pub async fn answer(
+    bot: Bot,
+    msg: Message,
+    cmd: Command,
+    tm: Arc<tool::ToolManager>,
+    cfg: Arc<config::Config>,
+) -> ResponseResult<()> {
     tokio::spawn(async move {
         match cmd {
             Command::Dump { arg } | Command::Dumper { arg } => {
@@ -89,7 +95,12 @@ pub async fn answer(bot: Bot, msg: Message, cmd: Command, tm: Arc<tool::ToolMana
     Ok(())
 }
 
-async fn dump_cmd(bot: Bot, msg: Message, arg: String, cfg: Arc<config::Config>) -> Result<Message, RequestError> {
+async fn dump_cmd(
+    bot: Bot,
+    msg: Message,
+    arg: String,
+    cfg: Arc<config::Config>,
+) -> Result<Message, RequestError> {
     let cmd: Vec<&str> = arg.split_whitespace().collect();
     if cmd.len() != 2 {
         warn!("{}: Dump: Invalid command: {arg}", msg.chat.id);
@@ -262,7 +273,12 @@ async fn list_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, Reques
         .await
 }
 
-async fn patch_cmd(bot: Bot, msg: Message, arg: String, tm: Arc<tool::ToolManager>) -> Result<Message, RequestError> {
+async fn patch_cmd(
+    bot: Bot,
+    msg: Message,
+    arg: String,
+    tm: Arc<tool::ToolManager>,
+) -> Result<Message, RequestError> {
     let args = arg.split_whitespace().collect::<Vec<_>>();
     let url = args[0];
     let patch_partition = args[1];
@@ -300,9 +316,11 @@ async fn patch_cmd(bot: Bot, msg: Message, arg: String, tm: Arc<tool::ToolManage
                 )))
                 .parse_mode(ParseMode::MarkdownV2);
             if PathBuf::from(patched_file.path.clone()).exists() {
-                match bot.send_media_group(status_msg.chat.id, vec![InputMedia::Document(document)])
+                match bot
+                    .send_media_group(status_msg.chat.id, vec![InputMedia::Document(document)])
                     .reply_to(msg.id)
-                    .await {
+                    .await
+                {
                     Ok(_) => {
                         info!("All files uploaded successfully.");
                         bot.edit_message_text(
@@ -310,7 +328,7 @@ async fn patch_cmd(bot: Bot, msg: Message, arg: String, tm: Arc<tool::ToolManage
                             status_msg.id,
                             "All files uploaded successfully.",
                         )
-                            .await?;
+                        .await?;
                         tokio::time::sleep(Duration::from_secs(10)).await;
                         bot.delete_message(msg.chat.id, status_msg.id).await?;
                     }
@@ -321,7 +339,7 @@ async fn patch_cmd(bot: Bot, msg: Message, arg: String, tm: Arc<tool::ToolManage
                             status_msg.id,
                             format!("Failed to upload file: {err}"),
                         )
-                            .await?;
+                        .await?;
                     }
                 }
             } else {
@@ -330,7 +348,7 @@ async fn patch_cmd(bot: Bot, msg: Message, arg: String, tm: Arc<tool::ToolManage
                     status_msg.id,
                     format!("Patched file {} not found!", patched_file.path.display()),
                 )
-                    .await?;
+                .await?;
             }
 
             let temp_dir = patched_file.path.parent().unwrap();
@@ -362,7 +380,12 @@ async fn help_cmd(bot: Bot, msg: Message) -> Result<Message, RequestError> {
         .await
 }
 
-async fn update_cmd(bot: Bot, msg: Message, tm: Arc<tool::ToolManager>, cfg: Arc<config::Config>) -> Result<Message, RequestError> {
+async fn update_cmd(
+    bot: Bot,
+    msg: Message,
+    tm: Arc<tool::ToolManager>,
+    cfg: Arc<config::Config>,
+) -> Result<Message, RequestError> {
     let sender_id = match msg.from.as_ref() {
         Some(user) => user.id.0 as i64,
         None => {
@@ -371,7 +394,10 @@ async fn update_cmd(bot: Bot, msg: Message, tm: Arc<tool::ToolManager>, cfg: Arc
         }
     };
     if !cfg.admin_users.is_empty() && !cfg.admin_users.contains(&sender_id) {
-        warn!("{}: Update: Unauthorized user {sender_id}, ignoring", msg.chat.id);
+        warn!(
+            "{}: Update: Unauthorized user {sender_id}, ignoring",
+            msg.chat.id
+        );
         return Ok(msg);
     }
     let status_msg = bot
