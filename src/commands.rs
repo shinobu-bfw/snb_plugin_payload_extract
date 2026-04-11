@@ -3,7 +3,6 @@ use crate::utils::to_tg_md;
 use crate::{config, payload, tool};
 use anyhow::Result;
 use log::{debug, error, info, warn};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use teloxide::macros::BotCommands;
@@ -80,7 +79,7 @@ pub async fn answer(
                     error!("Error in list_cmd: {e}");
                 }
             }
-            Command::Help { .. } | Command::Start { .. } => {
+            Command::Help | Command::Start => {
                 if let Err(e) = help_cmd(bot, msg).await {
                     error!("Error in help_cmd: {e}");
                 }
@@ -120,11 +119,12 @@ async fn dump_cmd(
     let mut unsupported_partitions: Vec<String> = Vec::new();
     let partitions = partition.split(',').collect::<Vec<_>>();
     if !cfg.supported_partitions.is_empty() {
-        let _ = partitions.iter().map(|p| {
-            if cfg.supported_partitions.contains(&p.to_string()) {
-                unsupported_partitions.push(p.to_string());
-            }
-        });
+        unsupported_partitions.extend(
+            partitions
+                .iter()
+                .filter(|p| !cfg.supported_partitions.iter().any(|item| item == **p))
+                .map(|p| (*p).to_string()),
+        );
 
         if !unsupported_partitions.is_empty() {
             warn!(
@@ -227,8 +227,7 @@ async fn dump_cmd(
                 }
             };
 
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            bot.delete_message(msg.chat.id, status_msg.id).await?;
+            delete_later(&bot, msg.chat.id, status_msg.id).await?;
             info!("Cleaning up temporary directory: {}", temp_dir.display());
             if let Err(e) = std::fs::remove_dir_all(&temp_dir) {
                 error!(
@@ -251,7 +250,12 @@ async fn dump_cmd(
 }
 
 async fn list_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, RequestError> {
-    let url = arg.split_whitespace().collect::<Vec<_>>()[0];
+    let Some(url) = arg.split_whitespace().next() else {
+        return bot
+            .send_message(msg.chat.id, "Invalid command! Usage: /list <url>")
+            .reply_to(msg.id)
+            .await;
+    };
     info!("{}: Received list command, url: {url}", msg.chat.id);
     debug!(
         "{}: Sender: {}, chat_id: {}",
@@ -280,6 +284,16 @@ async fn patch_cmd(
     tm: Arc<tool::ToolManager>,
 ) -> Result<Message, RequestError> {
     let args = arg.split_whitespace().collect::<Vec<_>>();
+    if args.len() < 2 {
+        return bot
+            .send_message(
+                msg.chat.id,
+                "Invalid command! Usage: /patch <url> <partition> [method]",
+            )
+            .reply_to(msg.id)
+            .await;
+    }
+
     let url = args[0];
     let patch_partition = args[1];
     let patch_method = if args.len() < 3 { "ksu" } else { args[2] };
@@ -315,7 +329,7 @@ async fn patch_cmd(
                     patched_file.kmi, patched_file.kernel_version
                 )))
                 .parse_mode(ParseMode::MarkdownV2);
-            if PathBuf::from(patched_file.path.clone()).exists() {
+            if patched_file.path.exists() {
                 match bot
                     .send_media_group(status_msg.chat.id, vec![InputMedia::Document(document)])
                     .reply_to(msg.id)
@@ -329,8 +343,7 @@ async fn patch_cmd(
                             "All files uploaded successfully.",
                         )
                         .await?;
-                        tokio::time::sleep(Duration::from_secs(10)).await;
-                        bot.delete_message(msg.chat.id, status_msg.id).await?;
+                        delete_later(&bot, msg.chat.id, status_msg.id).await?;
                     }
                     Err(err) => {
                         error!("Error while uploading files: {err}");
@@ -353,7 +366,7 @@ async fn patch_cmd(
 
             let temp_dir = patched_file.path.parent().unwrap();
             info!("Cleaning up temporary directory: {}", temp_dir.display());
-            if let Err(e) = std::fs::remove_dir_all(&temp_dir) {
+            if let Err(e) = std::fs::remove_dir_all(temp_dir) {
                 error!(
                     "Failed to clean up temp directory {}: {e}",
                     temp_dir.display(),
@@ -424,4 +437,14 @@ async fn update_cmd(
         }
     }
     Ok(status_msg)
+}
+
+async fn delete_later(
+    bot: &Bot,
+    chat_id: teloxide::types::ChatId,
+    message_id: teloxide::types::MessageId,
+) -> Result<(), RequestError> {
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    bot.delete_message(chat_id, message_id).await?;
+    Ok(())
 }

@@ -1,8 +1,9 @@
 use crate::payload::dump_partition;
 use crate::tool::*;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use log::info;
 use regex::Regex;
+use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
@@ -22,11 +23,15 @@ impl PatchMethod {
             _ => Err(anyhow::anyhow!("Invalid patch method: {}", s)),
         }
     }
-    fn to_string(&self) -> String {
-        match self {
-            Self::KernelSU => "kernelsu".to_string(),
-            Self::Magisk => "magisk".to_string(),
-        }
+}
+
+impl fmt::Display for PatchMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::KernelSU => "kernelsu",
+            Self::Magisk => "magisk",
+        };
+        f.write_str(value)
     }
 }
 
@@ -46,11 +51,11 @@ impl PatchPartition {
         }
     }
 
-    fn get_partition_name(&self) -> String {
+    fn get_partition_name(&self) -> &'static str {
         match self {
-            Self::Boot => "boot".to_string(),
-            Self::InitBoot => "init_boot".to_string(),
-            Self::VendorBoot => "vendor_boot".to_string(),
+            Self::Boot => "boot",
+            Self::InitBoot => "init_boot",
+            Self::VendorBoot => "vendor_boot",
         }
     }
 }
@@ -71,7 +76,7 @@ impl Patch {
     fn patch(&self, dir: PathBuf) -> Result<PatchedFile> {
         let mut patched_name = format!(
             "{}_patched_{}",
-            self.method.to_string(),
+            self.method,
             self.partition.get_partition_name()
         );
 
@@ -90,9 +95,9 @@ impl Patch {
                     self.tm.get_ksud().get().display()
                 );
 
-                let _ = Command::new(ksud)
+                let output = Command::new(ksud)
                     .current_dir(dir.clone())
-                    .args(&[
+                    .args([
                         "boot-patch",
                         "-b",
                         format!("{}.img", self.partition.get_partition_name()).as_str(),
@@ -104,7 +109,13 @@ impl Patch {
                         patched_name.as_str(),
                     ])
                     .output()?;
-                let mut file = PathBuf::from(dir);
+                if !output.status.success() {
+                    bail!(
+                        "ksud boot-patch failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                }
+                let mut file = dir;
                 file.push(&patched_name);
                 Ok(PatchedFile {
                     path: file,
@@ -130,10 +141,9 @@ pub async fn patch_boot(
         tm,
     };
     let mut images = Vec::new();
-    images.push(patch.partition.get_partition_name());
-    match patch.method {
-        PatchMethod::KernelSU => images.push("boot".to_string()),
-        _ => {}
+    images.push(patch.partition.get_partition_name().to_string());
+    if let PatchMethod::KernelSU = patch.method {
+        images.push("boot".to_string());
     }
     let (_, dir) = dump_partition(url.clone(), images.join(",")).await?;
     patch.patch(dir)
@@ -145,12 +155,18 @@ fn get_kmi(magiskboot: PathBuf, dir: PathBuf) -> Result<(String, String)> {
         std::env::current_dir()?.display(),
         magiskboot.display()
     );
-    let _ = Command::new(magiskboot)
+    let output = Command::new(magiskboot)
         .current_dir(&dir)
-        .args(&["unpack", "-n", "boot.img"])
+        .args(["unpack", "-n", "boot.img"])
         .output()?;
+    if !output.status.success() {
+        bail!(
+            "magiskboot unpack failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
 
-    let file = File::open(dir.join("kernel"))?;
+    let file = File::open(dir.join("kernel")).context("Failed to open unpacked kernel")?;
     let mut reader = BufReader::new(file);
     let mut buffer = Vec::new();
 
