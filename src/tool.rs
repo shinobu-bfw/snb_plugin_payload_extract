@@ -96,14 +96,7 @@ impl Tool for Magiskboot {
 
     async fn get_latest(&self) -> Result<()> {
         info!("Getting latest magiskboot");
-        self.0
-            .download_and_extract(
-                "topjohnwu",
-                "Magisk",
-                r"^Magisk-v.+\.apk$",
-                &format!("lib/{}/libmagiskboot.so", self.0.basis.android_abi()),
-            )
-            .await
+        self.0.download_latest_magisk().await
     }
 }
 
@@ -124,6 +117,7 @@ async fn download_bytes(url: &str) -> Result<Bytes> {
 
 #[derive(Deserialize)]
 struct GithubRelease {
+    tag_name: String,
     assets: Vec<GithubAsset>,
 }
 
@@ -144,7 +138,11 @@ struct GithubWorkflowRun {
     head_branch: String,
 }
 
-async fn find_latest_asset_url(owner: &str, repo: &str, asset_pattern: &Regex) -> Result<String> {
+async fn find_latest_release_asset(
+    owner: &str,
+    repo: &str,
+    asset_pattern: &Regex,
+) -> Result<(String, String)> {
     let client = github_client()?;
     let release_api = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
     let resp = client.get(&release_api).send().await?;
@@ -157,7 +155,7 @@ async fn find_latest_asset_url(owner: &str, repo: &str, asset_pattern: &Regex) -
         .await
         .with_context(|| format!("Failed to decode latest release metadata for {owner}/{repo}"))?;
 
-    release
+    let asset_url = release
         .assets
         .into_iter()
         .find(|asset| asset_pattern.is_match(&asset.name))
@@ -167,7 +165,9 @@ async fn find_latest_asset_url(owner: &str, repo: &str, asset_pattern: &Regex) -
                 "Asset matching `{}` not found for {owner}/{repo}",
                 asset_pattern.as_str()
             )
-        })
+        })?;
+
+    Ok((release.tag_name, asset_url))
 }
 
 fn write_zip_entry(bytes: Bytes, entry_name: &str, output_path: PathBuf) -> Result<()> {
@@ -208,34 +208,114 @@ where
 }
 
 impl BaseTool {
-    async fn download_and_extract(
-        &self,
-        owner: &str,
-        repo: &str,
-        asset_pattern: &str,
-        entry_name: &str,
-    ) -> Result<()> {
-        let asset_pattern = Regex::new(asset_pattern)?;
-        let asset_url = find_latest_asset_url(owner, repo, &asset_pattern).await?;
-        info!("Downloading latest {} package...", self.name);
+    fn version_path(&self) -> PathBuf {
+        self.path.with_file_name(format!("{}.version", self.name))
+    }
+
+    fn read_version(&self) -> Option<String> {
+        fs::read_to_string(self.version_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn write_version(&self, version: &str) -> Result<()> {
+        fs::write(self.version_path(), version)?;
+        Ok(())
+    }
+
+    fn magisk_dir(&self) -> PathBuf {
+        self.path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("magisk")
+    }
+
+    async fn download_latest_magisk(&self) -> Result<()> {
+        let asset_pattern = Regex::new(r"^Magisk-v.+\.apk$")?;
+        let (version, asset_url) =
+            find_latest_release_asset("topjohnwu", "Magisk", &asset_pattern).await?;
+
+        info!("Downloading latest magisk package...");
         let body = download_bytes(&asset_url).await?;
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
 
+        let magisk_dir = self.magisk_dir();
+        fs::create_dir_all(magisk_dir.join("chromeos"))?;
+
         info!("Successfully downloaded, extracting {}...", self.name);
-        write_zip_entry(body, entry_name, self.path.clone())?;
+        write_zip_entry(
+            body.clone(),
+            &format!("lib/{}/libmagiskboot.so", self.basis.android_abi()),
+            self.path.clone(),
+        )?;
+        write_zip_entry(
+            body.clone(),
+            &format!("lib/{}/libmagiskinit.so", self.basis.android_abi()),
+            magisk_dir.join("magiskinit"),
+        )?;
+        write_zip_entry(
+            body.clone(),
+            &format!("lib/{}/libmagisk.so", self.basis.android_abi()),
+            magisk_dir.join("magisk"),
+        )?;
+        write_zip_entry(
+            body.clone(),
+            &format!("lib/{}/libinit-ld.so", self.basis.android_abi()),
+            magisk_dir.join("init-ld"),
+        )?;
+        write_zip_entry(body.clone(), "assets/stub.apk", magisk_dir.join("stub.apk"))?;
+        write_zip_entry(
+            body.clone(),
+            "assets/boot_patch.sh",
+            magisk_dir.join("boot_patch.sh"),
+        )?;
+        write_zip_entry(
+            body.clone(),
+            "assets/util_functions.sh",
+            magisk_dir.join("util_functions.sh"),
+        )?;
+        write_zip_entry(
+            body.clone(),
+            "assets/chromeos/futility",
+            magisk_dir.join("chromeos").join("futility"),
+        )?;
+        write_zip_entry(
+            body.clone(),
+            "assets/chromeos/kernel.keyblock",
+            magisk_dir.join("chromeos").join("kernel.keyblock"),
+        )?;
+        write_zip_entry(
+            body,
+            "assets/chromeos/kernel_data_key.vbprivk",
+            magisk_dir.join("chromeos").join("kernel_data_key.vbprivk"),
+        )?;
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o755))?;
+            for path in [
+                self.path.clone(),
+                magisk_dir.join("magiskinit"),
+                magisk_dir.join("magisk"),
+                magisk_dir.join("init-ld"),
+                magisk_dir.join("boot_patch.sh"),
+                magisk_dir.join("util_functions.sh"),
+                magisk_dir.join("chromeos").join("futility"),
+            ] {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+            }
         }
+
+        self.write_version(&version)?;
         info!("Download latest {} success", self.name);
         Ok(())
     }
 
     async fn download_latest_ksud(&self) -> Result<()> {
-        let run_id = find_latest_release_run_id("tiann", "KernelSU").await?;
+        let (run_id, version) = find_latest_release_run("tiann", "KernelSU").await?;
         let artifact_name = format!("ksud-{}", self.basis.ksud_target());
         let asset_url = format!(
             "https://nightly.link/tiann/KernelSU/actions/runs/{run_id}/{artifact_name}.zip"
@@ -258,12 +338,13 @@ impl BaseTool {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&self.path, fs::Permissions::from_mode(0o755))?;
         }
+        self.write_version(&version)?;
         info!("Download latest {} success", self.name);
         Ok(())
     }
 }
 
-async fn find_latest_release_run_id(owner: &str, repo: &str) -> Result<u64> {
+async fn find_latest_release_run(owner: &str, repo: &str) -> Result<(u64, String)> {
     let client = github_client()?;
     let runs_api = format!(
         "https://api.github.com/repos/{owner}/{repo}/actions/workflows/47761839/runs?status=success&event=push&per_page=20"
@@ -284,7 +365,7 @@ async fn find_latest_release_run_id(owner: &str, repo: &str) -> Result<u64> {
     runs.workflow_runs
         .into_iter()
         .find(|run| run.head_branch.starts_with('v'))
-        .map(|run| run.id)
+        .map(|run| (run.id, run.head_branch))
         .context("No successful KernelSU release workflow run found")
 }
 
@@ -324,6 +405,20 @@ impl ToolManager {
     pub fn get_ksud(&self) -> Ksud {
         self.ksud.clone()
     }
+
+    pub fn get_ksud_version(&self) -> String {
+        self.ksud
+            .0
+            .read_version()
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    pub fn get_magisk_version(&self) -> String {
+        self.magiskboot
+            .0
+            .read_version()
+            .unwrap_or_else(|| "unknown".to_string())
+    }
 }
 
 impl Default for Basis {
@@ -351,7 +446,7 @@ impl Default for Basis {
 }
 
 impl Basis {
-    fn android_abi(&self) -> &'static str {
+    pub fn android_abi(&self) -> &'static str {
         match self.arch {
             "x86_64" => "x86_64",
             "aarch64" => "arm64-v8a",
@@ -367,5 +462,15 @@ impl Basis {
             ("android", "aarch64") => "aarch64-linux-android",
             _ => unreachable!("Unsupported platform and arch {}/{}", self.os, self.arch),
         }
+    }
+}
+
+impl Magiskboot {
+    pub fn get_magisk_dir(&self) -> PathBuf {
+        self.0.magisk_dir()
+    }
+
+    pub fn get_android_abi(&self) -> &'static str {
+        self.0.basis.android_abi()
     }
 }

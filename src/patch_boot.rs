@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use log::info;
 use regex::Regex;
 use std::fmt;
+use std::fs;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
@@ -70,6 +71,8 @@ pub struct PatchedFile {
     pub(crate) path: PathBuf,
     pub(crate) kmi: String,
     pub(crate) kernel_version: String,
+    pub(crate) patch_method: String,
+    pub(crate) patch_version: String,
 }
 
 impl Patch {
@@ -84,7 +87,7 @@ impl Patch {
             PatchMethod::KernelSU => {
                 let ksud = self.tm.get_ksud().get();
                 let magiskboot = self.tm.get_magiskboot().get();
-                let (kmi, kernel_version) = get_kmi(magiskboot.clone(), dir.clone())?;
+                let (kmi, kernel_version) = get_kmi(magiskboot.clone(), dir.clone(), "boot.img")?;
 
                 patched_name = format!("{patched_name}-{kmi}.img");
 
@@ -121,9 +124,54 @@ impl Patch {
                     path: file,
                     kmi,
                     kernel_version,
+                    patch_method: "KernelSU".to_string(),
+                    patch_version: self.tm.get_ksud_version(),
                 })
             }
-            PatchMethod::Magisk => Err(anyhow::anyhow!("Magisk patch hasn't implemented!")),
+            PatchMethod::Magisk => {
+                let magiskboot = self.tm.get_magiskboot();
+                let image_name = format!("{}.img", self.partition.get_partition_name());
+                let patch_version = self.tm.get_magisk_version();
+
+                prepare_magisk_patch_dir(magiskboot.clone(), dir.clone())?;
+
+                let output = Command::new("bash")
+                    .current_dir(dir.clone())
+                    .arg("-lc")
+                    .arg(format!(
+                        "set -e; export BOOTMODE=true SOURCEDMODE=true ABI='{}' API='34'; . ./util_functions.sh; . ./boot_patch.sh '{}'",
+                        magiskboot.get_android_abi(),
+                        image_name
+                    ))
+                    .output()?;
+
+                if !output.status.success() {
+                    bail!(
+                        "magisk boot_patch failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                }
+
+                let new_image = find_magisk_patched_image(&dir, &image_name)?;
+                patched_name = format!("{patched_name}.img");
+                let patched_path = dir.join(&patched_name);
+                fs::rename(new_image, &patched_path)?;
+
+                let (kmi, kernel_version) = if matches!(self.partition, PatchPartition::Boot) {
+                    get_kmi(magiskboot.get(), dir.clone(), "boot.img")
+                        .unwrap_or_else(|_| ("N/A".to_string(), "N/A".to_string()))
+                } else {
+                    ("N/A".to_string(), "N/A".to_string())
+                };
+
+                Ok(PatchedFile {
+                    path: patched_path,
+                    kmi,
+                    kernel_version,
+                    patch_method: "Magisk".to_string(),
+                    patch_version,
+                })
+            }
         }
     }
 }
@@ -149,15 +197,72 @@ pub async fn patch_boot(
     patch.patch(dir)
 }
 
-fn get_kmi(magiskboot: PathBuf, dir: PathBuf) -> Result<(String, String)> {
+fn prepare_magisk_patch_dir(magiskboot: Magiskboot, dir: PathBuf) -> Result<()> {
+    let magisk_dir = magiskboot.get_magisk_dir();
+    for file in [
+        ("magiskboot", magiskboot.get()),
+        ("magiskinit", magisk_dir.join("magiskinit")),
+        ("magisk", magisk_dir.join("magisk")),
+        ("init-ld", magisk_dir.join("init-ld")),
+        ("stub.apk", magisk_dir.join("stub.apk")),
+        ("boot_patch.sh", magisk_dir.join("boot_patch.sh")),
+        ("util_functions.sh", magisk_dir.join("util_functions.sh")),
+    ] {
+        fs::copy(file.1, dir.join(file.0))?;
+    }
+
+    let chromeos_dir = dir.join("chromeos");
+    fs::create_dir_all(&chromeos_dir)?;
+    for file in ["futility", "kernel.keyblock", "kernel_data_key.vbprivk"] {
+        fs::copy(
+            magisk_dir.join("chromeos").join(file),
+            chromeos_dir.join(file),
+        )?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [
+            dir.join("magiskboot"),
+            dir.join("magiskinit"),
+            dir.join("magisk"),
+            dir.join("init-ld"),
+            dir.join("boot_patch.sh"),
+            dir.join("util_functions.sh"),
+            dir.join("chromeos").join("futility"),
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn find_magisk_patched_image(dir: &PathBuf, image_name: &str) -> Result<PathBuf> {
+    let candidates = [
+        dir.join(format!("new-{image_name}")),
+        dir.join("new-boot.img"),
+        dir.join("new-init_boot.img"),
+        dir.join("new-vendor_boot.img"),
+    ];
+
+    candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .context("Magisk patched image not found")
+}
+
+fn get_kmi(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<(String, String)> {
     info!(
-        "Getting kmi from boot.img in {}, tool: {}",
+        "Getting kmi from {} in {}, tool: {}",
+        image_name,
         std::env::current_dir()?.display(),
         magiskboot.display()
     );
     let output = Command::new(magiskboot)
         .current_dir(&dir)
-        .args(["unpack", "-n", "boot.img"])
+        .args(["unpack", "-n", image_name])
         .output()?;
     if !output.status.success() {
         bail!(

@@ -325,8 +325,11 @@ async fn patch_cmd(
             .await?;
             let document = InputMediaDocument::new(InputFile::file(patched_file.path.clone()))
                 .caption(to_tg_md(format!(
-                    ">KMI: `{}`\n>Kernel Version: `{}`",
-                    patched_file.kmi, patched_file.kernel_version
+                    ">Patch Method: `{}`\n>Patch Version: `{}`\n>KMI: `{}`\n>Kernel Version: `{}`",
+                    patched_file.patch_method,
+                    patched_file.patch_version,
+                    patched_file.kmi,
+                    patched_file.kernel_version
                 )))
                 .parse_mode(ParseMode::MarkdownV2);
             if patched_file.path.exists() {
