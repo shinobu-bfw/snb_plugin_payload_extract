@@ -69,14 +69,7 @@ impl Tool for Ksud {
 
     async fn get_latest(&self) -> Result<()> {
         info!("Getting latest ksud");
-        self.0
-            .download_and_extract(
-                "tiann",
-                "KernelSU",
-                r"^KernelSU_v.+\.apk$",
-                &format!("lib/{}/libksud.so", self.0.basis.android_abi()),
-            )
-            .await
+        self.0.download_latest_ksud().await
     }
 }
 
@@ -140,6 +133,17 @@ struct GithubAsset {
     browser_download_url: String,
 }
 
+#[derive(Deserialize)]
+struct GithubWorkflowRuns {
+    workflow_runs: Vec<GithubWorkflowRun>,
+}
+
+#[derive(Deserialize)]
+struct GithubWorkflowRun {
+    id: u64,
+    head_branch: String,
+}
+
 async fn find_latest_asset_url(owner: &str, repo: &str, asset_pattern: &Regex) -> Result<String> {
     let client = github_client()?;
     let release_api = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
@@ -183,6 +187,26 @@ fn write_zip_entry(bytes: Bytes, entry_name: &str, output_path: PathBuf) -> Resu
     Err(anyhow::anyhow!("Zip entry not found: {entry_name}"))
 }
 
+fn write_zip_entry_by_name<F>(bytes: Bytes, predicate: F, output_path: PathBuf) -> Result<()>
+where
+    F: Fn(&str) -> bool,
+{
+    let reader = Cursor::new(bytes);
+    let mut archive = ZipArchive::new(reader)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        if predicate(file.name()) {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)?;
+            fs::write(output_path, content)?;
+            return Ok(());
+        }
+    }
+
+    Err(anyhow::anyhow!("Matching zip entry not found"))
+}
+
 impl BaseTool {
     async fn download_and_extract(
         &self,
@@ -209,6 +233,59 @@ impl BaseTool {
         info!("Download latest {} success", self.name);
         Ok(())
     }
+
+    async fn download_latest_ksud(&self) -> Result<()> {
+        let run_id = find_latest_release_run_id("tiann", "KernelSU").await?;
+        let artifact_name = format!("ksud-{}", self.basis.ksud_target());
+        let asset_url = format!(
+            "https://nightly.link/tiann/KernelSU/actions/runs/{run_id}/{artifact_name}.zip"
+        );
+
+        info!(
+            "Downloading latest {} package from release run {run_id}...",
+            self.name
+        );
+        let body = download_bytes(&asset_url).await?;
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let expected_name = format!("ksud{}", self.basis.suffix);
+        info!("Successfully downloaded, extracting {}...", self.name);
+        write_zip_entry_by_name(body, |name| name == expected_name, self.path.clone())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o755))?;
+        }
+        info!("Download latest {} success", self.name);
+        Ok(())
+    }
+}
+
+async fn find_latest_release_run_id(owner: &str, repo: &str) -> Result<u64> {
+    let client = github_client()?;
+    let runs_api = format!(
+        "https://api.github.com/repos/{owner}/{repo}/actions/workflows/47761839/runs?status=success&event=push&per_page=20"
+    );
+    let resp = client.get(&runs_api).send().await?;
+    if !resp.status().is_success() {
+        bail!(
+            "Failed to fetch latest release workflow runs: {}",
+            resp.status()
+        );
+    }
+
+    let runs: GithubWorkflowRuns = resp
+        .json()
+        .await
+        .with_context(|| format!("Failed to decode release workflow runs for {owner}/{repo}"))?;
+
+    runs.workflow_runs
+        .into_iter()
+        .find(|run| run.head_branch.starts_with('v'))
+        .map(|run| run.id)
+        .context("No successful KernelSU release workflow run found")
 }
 
 #[derive(Clone)]
@@ -279,6 +356,16 @@ impl Basis {
             "x86_64" => "x86_64",
             "aarch64" => "arm64-v8a",
             _ => unreachable!("Unsupported arch: {}", self.arch),
+        }
+    }
+
+    fn ksud_target(&self) -> &'static str {
+        match (self.os, self.arch) {
+            ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+            ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+            ("android", "x86_64") => "x86_64-linux-android",
+            ("android", "aarch64") => "aarch64-linux-android",
+            _ => unreachable!("Unsupported platform and arch {}/{}", self.os, self.arch),
         }
     }
 }
