@@ -27,9 +27,9 @@ pub async fn log_message(msg: Message) -> ResponseResult<()> {
     let group_id = msg.chat.id;
 
     if let Some(text) = msg.text() {
-        info!("{sender}({sender_id}) [{group_name}({group_id})] : {text}");
+        info!("[{group_name}({group_id})]{sender}({sender_id}): {text}");
     } else {
-        info!("{sender}({sender_id}) [{group_name}({group_id})] : <non-text message>");
+        info!("[{group_name}({group_id})]{sender}({sender_id}): <non-text message>");
     }
     Ok(())
 }
