@@ -65,6 +65,7 @@ struct Patch {
     tm: Arc<crate::tool::ToolManager>,
     method: PatchMethod,
     partition: PatchPartition,
+    manual_kmi: Option<String>,
 }
 
 pub struct PatchedFile {
@@ -87,7 +88,15 @@ impl Patch {
             PatchMethod::KernelSU => {
                 let ksud = self.tm.get_ksud().get();
                 let magiskboot = self.tm.get_magiskboot().get();
-                let (kmi, kernel_version) = get_kmi(magiskboot.clone(), dir.clone(), "boot.img")?;
+                let (kmi, kernel_version) = match &self.manual_kmi {
+                    Some(kmi) => {
+                        info!("Using manual kmi: {}", kmi);
+                        let kernel_version =
+                            get_kernel_version(magiskboot.clone(), dir.clone(), "boot.img")?;
+                        (kmi.clone(), kernel_version)
+                    }
+                    None => get_kmi(magiskboot.clone(), dir.clone(), "boot.img")?,
+                };
 
                 patched_name = format!("{patched_name}-{kmi}.img");
 
@@ -196,12 +205,14 @@ pub async fn patch_boot(
     url: String,
     patch_partition: String,
     patch_method: String,
+    manual_kmi: Option<String>,
     tm: Arc<crate::tool::ToolManager>,
 ) -> Result<PatchedFile> {
     info!("Patching boot: {url} {patch_partition} {patch_method}");
     let patch = Patch {
         method: PatchMethod::from(&patch_method)?,
         partition: PatchPartition::from(&patch_partition)?,
+        manual_kmi,
         tm,
     };
     let mut images = Vec::new();
@@ -270,8 +281,49 @@ fn find_magisk_patched_image(dir: &PathBuf, image_name: &str) -> Result<PathBuf>
 }
 
 fn get_kmi(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<(String, String)> {
+    let kernel_version = get_kernel_version(magiskboot.clone(), dir.clone(), image_name)?;
+    let file = File::open(dir.join("kernel")).context("Failed to open unpacked kernel")?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+
+    reader.read_to_end(&mut buffer)?;
+
+    let kmi_re = Regex::new(r"(?:.* )?(\d+\.\d+)(?:\S+)?(android\d+)")?;
+    let mut kmi: Option<String> = None;
+
+    let printable_strings = buffer
+        .split(|&b| b == 0)
+        .filter_map(|slice| std::str::from_utf8(slice).ok());
+
+    for s in printable_strings {
+        if kmi.is_none()
+            && s.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+            && let Some(caps) = kmi_re.captures(s)
+            && let (Some(kernel_version_part), Some(android_version)) = (caps.get(1), caps.get(2))
+        {
+            let kmi_str = format!(
+                "{}-{}",
+                android_version.as_str(),
+                kernel_version_part.as_str()
+            );
+            info!("Found kmi: {}", kmi_str);
+            kmi = Some(kmi_str);
+        }
+
+        if kmi.is_some() {
+            break;
+        }
+    }
+
+    match kmi {
+        Some(k) => Ok((k, kernel_version)),
+        None => Err(anyhow::anyhow!("Can't parse kmi from boot.img")),
+    }
+}
+
+fn get_kernel_version(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<String> {
     info!(
-        "Getting kmi from {} in {}, tool: {}",
+        "Getting kernel info from {} in {}, tool: {}",
         image_name,
         std::env::current_dir()?.display(),
         magiskboot.display()
@@ -293,10 +345,8 @@ fn get_kmi(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<(Strin
 
     reader.read_to_end(&mut buffer)?;
 
-    let kmi_re = Regex::new(r"(?:.* )?(\d+\.\d+)(?:\S+)?(android\d+)")?;
     let kernel_version_re = Regex::new(r"Linux version (.*)")?;
 
-    let mut kmi: Option<String> = None;
     let mut kernel_version: Option<String> = None;
 
     let printable_strings = buffer
@@ -304,20 +354,6 @@ fn get_kmi(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<(Strin
         .filter_map(|slice| std::str::from_utf8(slice).ok());
 
     for s in printable_strings {
-        if kmi.is_none()
-            && s.chars().all(|c| c.is_ascii_graphic() || c == ' ')
-            && let Some(caps) = kmi_re.captures(s)
-            && let (Some(kernel_version_part), Some(android_version)) = (caps.get(1), caps.get(2))
-        {
-            let kmi_str = format!(
-                "{}-{}",
-                android_version.as_str(),
-                kernel_version_part.as_str()
-            );
-            info!("Found kmi: {}", kmi_str);
-            kmi = Some(kmi_str);
-        }
-
         if kernel_version.is_none()
             && let Some(caps) = kernel_version_re.captures(s)
             && let Some(version) = caps.get(1)
@@ -329,17 +365,13 @@ fn get_kmi(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<(Strin
             }
         }
 
-        if kmi.is_some() && kernel_version.is_some() {
+        if kernel_version.is_some() {
             break;
         }
     }
 
-    match (kmi, kernel_version) {
-        (Some(k), Some(v)) => Ok((k, v)),
-        (Some(_), None) => Err(anyhow::anyhow!("Can't parse kernel version from kernel")),
-        (None, Some(_)) => Err(anyhow::anyhow!("Can't parse kmi from boot.img")),
-        (None, None) => Err(anyhow::anyhow!(
-            "Can't parse kmi and kernel version from boot.img"
-        )),
+    match kernel_version {
+        Some(v) => Ok(v),
+        None => Err(anyhow::anyhow!("Can't parse kernel version from kernel")),
     }
 }
