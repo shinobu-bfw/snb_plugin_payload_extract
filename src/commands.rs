@@ -1,4 +1,5 @@
 use crate::patch_boot::patch_boot;
+use crate::utils::log_message;
 use crate::utils::to_tg_md;
 use crate::{config, payload, tool};
 use anyhow::Result;
@@ -62,6 +63,7 @@ pub async fn answer(
     tm: Arc<tool::ToolManager>,
     cfg: Arc<config::Config>,
 ) -> ResponseResult<()> {
+    log_message(msg.clone()).await?;
     tokio::spawn(async move {
         match cmd {
             Command::Dump { arg } | Command::Dumper { arg } => {
