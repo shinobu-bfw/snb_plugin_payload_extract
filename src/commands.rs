@@ -286,11 +286,11 @@ async fn patch_cmd(
     tm: Arc<tool::ToolManager>,
 ) -> Result<Message, RequestError> {
     let args = arg.split_whitespace().collect::<Vec<_>>();
-    if args.len() < 2 {
+    if args.len() < 2 || args.len() > 3 {
         return bot
             .send_message(
                 msg.chat.id,
-                "Invalid command! Usage: /patch <url> <partition> [kmi]",
+                "Invalid command! Usage: /patch <url> <partition> [kmi] \nOnly support ksu patch now.",
             )
             .reply_to(msg.id)
             .await;
@@ -309,14 +309,7 @@ async fn patch_cmd(
         )
         .reply_to(msg.id)
         .await?;
-    match patch_boot(
-        url.to_string(),
-        patch_partition.to_string(),
-        patch_kmi,
-        tm,
-    )
-    .await
-    {
+    match patch_boot(url.to_string(), patch_partition.to_string(), patch_kmi, tm).await {
         Ok(patched_file) => {
             info!(
                 "Patch {patch_partition} with KernelSU successfully, patched file: {}",

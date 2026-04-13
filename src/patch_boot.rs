@@ -50,10 +50,7 @@ pub struct PatchedFile {
 
 impl Patch {
     fn patch(&self, dir: PathBuf) -> Result<PatchedFile> {
-        let patched_name = format!(
-            "kernelsu_patched_{}",
-            self.partition.get_partition_name()
-        );
+        let patched_name = format!("kernelsu_patched_{}", self.partition.get_partition_name());
 
         let ksud = self.tm.get_ksud().get();
         let magiskboot = self.tm.get_magiskboot().get();

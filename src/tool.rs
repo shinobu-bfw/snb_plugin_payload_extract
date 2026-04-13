@@ -187,26 +187,6 @@ fn write_zip_entry(bytes: Bytes, entry_name: &str, output_path: PathBuf) -> Resu
     Err(anyhow::anyhow!("Zip entry not found: {entry_name}"))
 }
 
-fn write_zip_entry_by_name<F>(bytes: Bytes, predicate: F, output_path: PathBuf) -> Result<()>
-where
-    F: Fn(&str) -> bool,
-{
-    let reader = Cursor::new(bytes);
-    let mut archive = ZipArchive::new(reader)?;
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        if predicate(file.name()) {
-            let mut content = Vec::new();
-            file.read_to_end(&mut content)?;
-            fs::write(output_path, content)?;
-            return Ok(());
-        }
-    }
-
-    Err(anyhow::anyhow!("Matching zip entry not found"))
-}
-
 impl BaseTool {
     fn version_path(&self) -> PathBuf {
         self.path.with_file_name(format!("{}.version", self.name))
@@ -224,13 +204,6 @@ impl BaseTool {
         Ok(())
     }
 
-    fn magisk_dir(&self) -> PathBuf {
-        self.path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("magisk")
-    }
-
     async fn download_latest_magisk(&self) -> Result<()> {
         let asset_pattern = Regex::new(r"^Magisk-v.+\.apk$")?;
         let (version, asset_url) =
@@ -242,71 +215,16 @@ impl BaseTool {
             fs::create_dir_all(parent)?;
         }
 
-        let magisk_dir = self.magisk_dir();
-        fs::create_dir_all(magisk_dir.join("chromeos"))?;
-
-        info!("Successfully downloaded, extracting {}...", self.name);
         write_zip_entry(
             body.clone(),
             &format!("lib/{}/libmagiskboot.so", self.basis.android_abi()),
             self.path.clone(),
         )?;
-        write_zip_entry(
-            body.clone(),
-            &format!("lib/{}/libmagiskinit.so", self.basis.android_abi()),
-            magisk_dir.join("magiskinit"),
-        )?;
-        write_zip_entry(
-            body.clone(),
-            &format!("lib/{}/libmagisk.so", self.basis.android_abi()),
-            magisk_dir.join("magisk"),
-        )?;
-        write_zip_entry(
-            body.clone(),
-            &format!("lib/{}/libinit-ld.so", self.basis.android_abi()),
-            magisk_dir.join("init-ld"),
-        )?;
-        write_zip_entry(body.clone(), "assets/stub.apk", magisk_dir.join("stub.apk"))?;
-        write_zip_entry(
-            body.clone(),
-            "assets/boot_patch.sh",
-            magisk_dir.join("boot_patch.sh"),
-        )?;
-        write_zip_entry(
-            body.clone(),
-            "assets/util_functions.sh",
-            magisk_dir.join("util_functions.sh"),
-        )?;
-        write_zip_entry(
-            body.clone(),
-            "assets/chromeos/futility",
-            magisk_dir.join("chromeos").join("futility"),
-        )?;
-        write_zip_entry(
-            body.clone(),
-            "assets/chromeos/kernel.keyblock",
-            magisk_dir.join("chromeos").join("kernel.keyblock"),
-        )?;
-        write_zip_entry(
-            body,
-            "assets/chromeos/kernel_data_key.vbprivk",
-            magisk_dir.join("chromeos").join("kernel_data_key.vbprivk"),
-        )?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for path in [
-                self.path.clone(),
-                magisk_dir.join("magiskinit"),
-                magisk_dir.join("magisk"),
-                magisk_dir.join("init-ld"),
-                magisk_dir.join("boot_patch.sh"),
-                magisk_dir.join("util_functions.sh"),
-                magisk_dir.join("chromeos").join("futility"),
-            ] {
-                fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
-            }
+            fs::set_permissions(self.path.clone(), fs::Permissions::from_mode(0o755))?;
         }
 
         self.write_version(&version)?;
@@ -330,9 +248,12 @@ impl BaseTool {
             fs::create_dir_all(parent)?;
         }
 
-        let expected_name = format!("ksud{}", self.basis.suffix);
         info!("Successfully downloaded, extracting {}...", self.name);
-        write_zip_entry_by_name(body, |name| name == expected_name, self.path.clone())?;
+        write_zip_entry(
+            body,
+            &format!("ksud{}", self.basis.suffix),
+            self.path.clone(),
+        )?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
