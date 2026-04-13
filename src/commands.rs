@@ -23,11 +23,10 @@ const HELP_MESSAGE: &str = r#"*[Payload dumper bot written in rust](https://gith
 > `/list \[url]`
 >   List partition info of url
 >
-> `/patch \[url] \[partition] \[method] \[kmi]`
->   Patch a boot partition
+> `/patch \[url] \[partition] \[kmi]`
+>   Patch a boot partition with KernelSU
 >    `partition`: boot\(b\), init\_boot\(ib\), vendor\_boot\(vb\)
->    `method`: kernelsu\(k, ksu\), magisk\(m\)
->    `kmi`: optional, only used for kernelsu patch
+>    `kmi`: optional
 >
 > `/update`
 >   Update ksud and magiskboot tools to latest version
@@ -291,7 +290,7 @@ async fn patch_cmd(
         return bot
             .send_message(
                 msg.chat.id,
-                "Invalid command! Usage: /patch <url> <partition> [method] [kmi]",
+                "Invalid command! Usage: /patch <url> <partition> [kmi]",
             )
             .reply_to(msg.id)
             .await;
@@ -299,14 +298,13 @@ async fn patch_cmd(
 
     let url = args[0];
     let patch_partition = args[1];
-    let patch_method = if args.len() < 3 { "ksu" } else { args[2] };
-    let patch_kmi = args.get(3).map(|s| (*s).to_string());
+    let patch_kmi = args.get(2).map(|s| (*s).to_string());
     let status_msg = bot
         .send_message(
             msg.chat.id,
             match &patch_kmi {
-                Some(kmi) => format!("Patching {patch_partition} with {patch_method} (KMI: {kmi})"),
-                None => format!("Patching {patch_partition} with {patch_method}"),
+                Some(kmi) => format!("Patching {patch_partition} with KernelSU (KMI: {kmi})"),
+                None => format!("Patching {patch_partition} with KernelSU"),
             },
         )
         .reply_to(msg.id)
@@ -314,7 +312,6 @@ async fn patch_cmd(
     match patch_boot(
         url.to_string(),
         patch_partition.to_string(),
-        patch_method.to_string(),
         patch_kmi,
         tm,
     )
@@ -322,7 +319,7 @@ async fn patch_cmd(
     {
         Ok(patched_file) => {
             info!(
-                "Patch {patch_partition} with {patch_method} successfully, patched file: {}",
+                "Patch {patch_partition} with KernelSU successfully, patched file: {}",
                 patched_file.path.display()
             );
             bot.edit_message_text(

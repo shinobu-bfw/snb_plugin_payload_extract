@@ -6,7 +6,7 @@ A Telegram bot that can extract partitions from a `payload.bin` file from a give
 
 - List partitions from a URL.
 - Dump one or more partitions.
-- Patch boot partitions with KernelSU or Magisk.
+- Patch boot partitions with KernelSU.
 
 ## Usage
 
@@ -16,13 +16,13 @@ The bot understands the following commands:
 |:------------------------------------|:--------------------------------------------------------------------------|:-------------------------------|
 | `/dump [url] [partitions]`          | Dump partition(s) from the URL. Partitions can be a comma-separated list. | `/dump <url> boot,vendor_boot` |
 | `/list [url]`                       | List all available partitions from the URL.                               | `/list <url>`                  |
-| `/patch [url] [partition] <method>` | Patch a boot partition.                                                   | `/patch <url> boot ksu`        |
+| `/patch [url] [partition]`        | Patch a boot partition with KernelSU.                                    | `/patch <url> boot`             |
 | `/help`                             | Show the help message.                                                    | `/help`                        |
 
 ### Patch Command Details
 
 - **`partition`**: `boot` (or `b`), `init_boot` (or `ib`), `vendor_boot` (or `vb`)
-- **`method`**: `kernelsu` (or `k`, `ksu`), `magisk` (or `m`), default is `kernelsu`
+- **`kmi`**: optional, kernel module interface
 
 ## Configuration
 

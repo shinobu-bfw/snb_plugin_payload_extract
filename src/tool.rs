@@ -412,13 +412,6 @@ impl ToolManager {
             .read_version()
             .unwrap_or_else(|| "unknown".to_string())
     }
-
-    pub fn get_magisk_version(&self) -> String {
-        self.magiskboot
-            .0
-            .read_version()
-            .unwrap_or_else(|| "unknown".to_string())
-    }
 }
 
 impl Default for Basis {
@@ -462,15 +455,5 @@ impl Basis {
             ("android", "aarch64") => "aarch64-linux-android",
             _ => unreachable!("Unsupported platform and arch {}/{}", self.os, self.arch),
         }
-    }
-}
-
-impl Magiskboot {
-    pub fn get_magisk_dir(&self) -> PathBuf {
-        self.0.magisk_dir()
-    }
-
-    pub fn get_android_abi(&self) -> &'static str {
-        self.0.basis.android_abi()
     }
 }

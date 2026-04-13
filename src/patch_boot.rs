@@ -3,38 +3,11 @@ use crate::tool::*;
 use anyhow::{Context, Result, bail};
 use log::info;
 use regex::Regex;
-use std::fmt;
-use std::fs;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-
-enum PatchMethod {
-    KernelSU,
-    Magisk,
-}
-
-impl PatchMethod {
-    fn from(s: &str) -> Result<Self> {
-        match s {
-            "kernelsu" | "ksu" | "k" => Ok(Self::KernelSU),
-            "magisk" | "m" => Ok(Self::Magisk),
-            _ => Err(anyhow::anyhow!("Invalid patch method: {}", s)),
-        }
-    }
-}
-
-impl fmt::Display for PatchMethod {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = match self {
-            Self::KernelSU => "kernelsu",
-            Self::Magisk => "magisk",
-        };
-        f.write_str(value)
-    }
-}
 
 enum PatchPartition {
     Boot,
@@ -63,7 +36,6 @@ impl PatchPartition {
 
 struct Patch {
     tm: Arc<crate::tool::ToolManager>,
-    method: PatchMethod,
     partition: PatchPartition,
     manual_kmi: Option<String>,
 }
@@ -78,206 +50,80 @@ pub struct PatchedFile {
 
 impl Patch {
     fn patch(&self, dir: PathBuf) -> Result<PatchedFile> {
-        let mut patched_name = format!(
-            "{}_patched_{}",
-            self.method,
+        let patched_name = format!(
+            "kernelsu_patched_{}",
             self.partition.get_partition_name()
         );
 
-        match &self.method {
-            PatchMethod::KernelSU => {
-                let ksud = self.tm.get_ksud().get();
-                let magiskboot = self.tm.get_magiskboot().get();
-                let (kmi, kernel_version) = match &self.manual_kmi {
-                    Some(kmi) => {
-                        info!("Using manual kmi: {}", kmi);
-                        let kernel_version =
-                            get_kernel_version(magiskboot.clone(), dir.clone(), "boot.img")?;
-                        (kmi.clone(), kernel_version)
-                    }
-                    None => get_kmi(magiskboot.clone(), dir.clone(), "boot.img")?,
-                };
-
-                patched_name = format!("{patched_name}-{kmi}.img");
-
-                info!(
-                    "patching {} with kmi: {}, tool: {}",
-                    self.partition.get_partition_name(),
-                    kmi,
-                    self.tm.get_ksud().get().display()
-                );
-
-                let output = Command::new(ksud)
-                    .current_dir(dir.clone())
-                    .args([
-                        "boot-patch",
-                        "-b",
-                        format!("{}.img", self.partition.get_partition_name()).as_str(),
-                        "--magiskboot",
-                        magiskboot.as_path().to_str().unwrap(),
-                        "--kmi",
-                        kmi.as_str(),
-                        "--out-name",
-                        patched_name.as_str(),
-                    ])
-                    .output()?;
-                if !output.status.success() {
-                    bail!(
-                        "ksud boot-patch failed: {}",
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    );
-                }
-                let mut file = dir;
-                file.push(&patched_name);
-                Ok(PatchedFile {
-                    path: file,
-                    kmi,
-                    kernel_version,
-                    patch_method: "KernelSU".to_string(),
-                    patch_version: self.tm.get_ksud_version(),
-                })
+        let ksud = self.tm.get_ksud().get();
+        let magiskboot = self.tm.get_magiskboot().get();
+        let (kmi, kernel_version) = match &self.manual_kmi {
+            Some(kmi) => {
+                info!("Using manual kmi: {}", kmi);
+                (kmi.clone(), "N/A".to_string())
             }
-            PatchMethod::Magisk => {
-                let magiskboot = self.tm.get_magiskboot();
-                let image_name = format!("{}.img", self.partition.get_partition_name());
-                let patch_version = self.tm.get_magisk_version();
+            None => get_kmi(magiskboot.clone(), dir.clone(), "boot.img")?,
+        };
 
-                prepare_magisk_patch_dir(magiskboot.clone(), dir.clone())?;
+        let patched_name = format!("{patched_name}-{kmi}.img");
 
-                let output = Command::new("bash")
-                    .current_dir(dir.clone())
-                    .arg("-lc")
-                    .arg(format!(
-                        "set -e; export BOOTMODE=true SOURCEDMODE=true ABI='{}' API='34' PREINITDEVICE='metadata'; . ./util_functions.sh; . ./boot_patch.sh '{}'",
-                        magiskboot.get_android_abi(),
-                        image_name
-                    ))
-                    .output()?;
+        info!(
+            "patching {} with kmi: {}, tool: {}",
+            self.partition.get_partition_name(),
+            kmi,
+            self.tm.get_ksud().get().display()
+        );
 
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    bail!(
-                        "magisk boot_patch failed: {}{}{}",
-                        if stderr.is_empty() {
-                            ""
-                        } else {
-                            stderr.as_str()
-                        },
-                        if !stderr.is_empty() && !stdout.is_empty() {
-                            "\n"
-                        } else {
-                            ""
-                        },
-                        if stdout.is_empty() {
-                            ""
-                        } else {
-                            stdout.as_str()
-                        }
-                    );
-                }
-
-                let new_image = find_magisk_patched_image(&dir, &image_name)?;
-                patched_name = format!("{patched_name}.img");
-                let patched_path = dir.join(&patched_name);
-                fs::rename(new_image, &patched_path)?;
-
-                let (kmi, kernel_version) = if matches!(self.partition, PatchPartition::Boot) {
-                    get_kmi(magiskboot.get(), dir.clone(), "boot.img")
-                        .unwrap_or_else(|_| ("N/A".to_string(), "N/A".to_string()))
-                } else {
-                    ("N/A".to_string(), "N/A".to_string())
-                };
-
-                Ok(PatchedFile {
-                    path: patched_path,
-                    kmi,
-                    kernel_version,
-                    patch_method: "Magisk".to_string(),
-                    patch_version,
-                })
-            }
+        let output = Command::new(ksud)
+            .current_dir(dir.clone())
+            .args([
+                "boot-patch",
+                "-b",
+                format!("{}.img", self.partition.get_partition_name()).as_str(),
+                "--magiskboot",
+                magiskboot.as_path().to_str().unwrap(),
+                "--kmi",
+                kmi.as_str(),
+                "--out-name",
+                patched_name.as_str(),
+            ])
+            .output()?;
+        if !output.status.success() {
+            bail!(
+                "ksud boot-patch failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
         }
+        let mut file = dir;
+        file.push(&patched_name);
+        Ok(PatchedFile {
+            path: file,
+            kmi,
+            kernel_version,
+            patch_method: "KernelSU".to_string(),
+            patch_version: self.tm.get_ksud_version(),
+        })
     }
 }
 
 pub async fn patch_boot(
     url: String,
     patch_partition: String,
-    patch_method: String,
     manual_kmi: Option<String>,
     tm: Arc<crate::tool::ToolManager>,
 ) -> Result<PatchedFile> {
-    info!("Patching boot: {url} {patch_partition} {patch_method}");
+    info!("Patching boot: {url} {patch_partition}");
     let patch = Patch {
-        method: PatchMethod::from(&patch_method)?,
         partition: PatchPartition::from(&patch_partition)?,
         manual_kmi,
         tm,
     };
-    let mut images = Vec::new();
-    images.push(patch.partition.get_partition_name().to_string());
-    if let PatchMethod::KernelSU = patch.method {
+    let mut images = vec![patch.partition.get_partition_name().to_string()];
+    if patch.manual_kmi.is_none() {
         images.push("boot".to_string());
     }
     let (_, dir) = dump_partition(url.clone(), images.join(",")).await?;
     patch.patch(dir)
-}
-
-fn prepare_magisk_patch_dir(magiskboot: Magiskboot, dir: PathBuf) -> Result<()> {
-    let magisk_dir = magiskboot.get_magisk_dir();
-    for file in [
-        ("magiskboot", magiskboot.get()),
-        ("magiskinit", magisk_dir.join("magiskinit")),
-        ("magisk", magisk_dir.join("magisk")),
-        ("init-ld", magisk_dir.join("init-ld")),
-        ("stub.apk", magisk_dir.join("stub.apk")),
-        ("boot_patch.sh", magisk_dir.join("boot_patch.sh")),
-        ("util_functions.sh", magisk_dir.join("util_functions.sh")),
-    ] {
-        fs::copy(file.1, dir.join(file.0))?;
-    }
-
-    let chromeos_dir = dir.join("chromeos");
-    fs::create_dir_all(&chromeos_dir)?;
-    for file in ["futility", "kernel.keyblock", "kernel_data_key.vbprivk"] {
-        fs::copy(
-            magisk_dir.join("chromeos").join(file),
-            chromeos_dir.join(file),
-        )?;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for path in [
-            dir.join("magiskboot"),
-            dir.join("magiskinit"),
-            dir.join("magisk"),
-            dir.join("init-ld"),
-            dir.join("boot_patch.sh"),
-            dir.join("util_functions.sh"),
-            dir.join("chromeos").join("futility"),
-        ] {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
-        }
-    }
-
-    Ok(())
-}
-
-fn find_magisk_patched_image(dir: &PathBuf, image_name: &str) -> Result<PathBuf> {
-    let candidates = [
-        dir.join(format!("new-{image_name}")),
-        dir.join("new-boot.img"),
-        dir.join("new-init_boot.img"),
-        dir.join("new-vendor_boot.img"),
-    ];
-
-    candidates
-        .into_iter()
-        .find(|path| path.exists())
-        .context("Magisk patched image not found")
 }
 
 fn get_kmi(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<(String, String)> {
