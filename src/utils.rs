@@ -1,4 +1,5 @@
-use log::info;
+use log::{info, warn};
+use std::sync::Arc;
 use teloxide::prelude::{Message, ResponseResult};
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36";
@@ -32,4 +33,19 @@ pub async fn log_message(msg: Message) -> ResponseResult<()> {
         info!("[{group_name}({group_id})]{sender}({sender_id}): <non-text message>");
     }
     Ok(())
+}
+
+pub fn is_admin(msg: Message, cfg: Arc<crate::config::Config>) -> bool {
+    let sender_id = match msg.from.as_ref() {
+        Some(user) => user.id.0 as i64,
+        None => {
+            warn!("{}: No sender info", msg.chat.id);
+            return false;
+        }
+    };
+    if !cfg.admin_users.is_empty() && cfg.admin_users.contains(&sender_id) {
+        return true;
+    }
+    warn!("{}: User {sender_id} is not an admin", msg.chat.id);
+    return false;
 }

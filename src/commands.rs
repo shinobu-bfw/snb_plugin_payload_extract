@@ -1,4 +1,5 @@
 use crate::patch_boot::patch_boot;
+use crate::utils::is_admin;
 use crate::utils::log_message;
 use crate::utils::to_tg_md;
 use crate::{config, payload, tool};
@@ -400,18 +401,7 @@ async fn update_cmd(
     tm: Arc<tool::ToolManager>,
     cfg: Arc<config::Config>,
 ) -> Result<Message, RequestError> {
-    let sender_id = match msg.from.as_ref() {
-        Some(user) => user.id.0 as i64,
-        None => {
-            warn!("{}: Update: No sender info, ignoring", msg.chat.id);
-            return Ok(msg);
-        }
-    };
-    if !cfg.admin_users.is_empty() && !cfg.admin_users.contains(&sender_id) {
-        warn!(
-            "{}: Update: Unauthorized user {sender_id}, ignoring",
-            msg.chat.id
-        );
+    if !is_admin(msg.clone(), cfg) {
         return Ok(msg);
     }
     let status_msg = bot
