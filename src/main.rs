@@ -1,3 +1,4 @@
+mod cmd_impl;
 mod commands;
 mod config;
 mod patch_boot;
