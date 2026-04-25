@@ -1,6 +1,8 @@
+use humantime::format_duration;
 use log::{info, warn};
 use std::fmt::Display;
 use std::sync::Arc;
+use std::time::Duration;
 use sysinfo::{Disks, System};
 use teloxide::prelude::{Message, ResponseResult};
 
@@ -111,7 +113,7 @@ pub fn get_sysinfo() -> Sysinfo {
             disk_total / 1_000_000_000,
             cac_per(disk_used, disk_total)
         ),
-        uptime: format!("{}s", System::uptime()),
+        uptime: format!("{}", format_duration(Duration::from_secs(System::uptime()))),
     }
 }
 
