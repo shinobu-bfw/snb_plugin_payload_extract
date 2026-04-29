@@ -228,7 +228,7 @@ pub async fn meta_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, Re
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;");
-            let html_message = format!("<pre>{escaped}</pre>");
+            let html_message = format!("<blockquote expandable>{escaped}</blockquote>");
             bot.send_message(msg.chat.id, html_message)
                 .parse_mode(ParseMode::Html)
                 .reply_to(msg.id)
@@ -265,11 +265,11 @@ pub async fn list_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, Re
     let ret = payload::list_image(url.to_string())
         .await
         .unwrap_or_else(|e| format!("Error fetching image: {e}"));
-    let escaped_ret = ret
+    let escaped = ret
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
-    let html_message = format!("<pre>{}</pre>", escaped_ret);
+    let html_message = format!("<blockquote expandable>{escaped}</blockquote>");
     bot.send_message(msg.chat.id, html_message)
         .parse_mode(ParseMode::Html)
         .reply_to(msg.id)
