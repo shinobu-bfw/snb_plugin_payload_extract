@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use payload_extract::extract::{ExtractConfig, extract_partitions};
 use payload_extract::input::{open, open_for_extract};
+use payload_extract::ota_metadata::DeviceState;
 use payload_extract::proto::PartitionUpdate;
 
 pub struct PartitionInfo {
@@ -60,6 +61,95 @@ pub async fn dump_partition(
         Ok((files, temp_dir))
     })
     .await?
+}
+
+pub async fn read_ota_metadata(url: String) -> Result<String> {
+    info!("Reading OTA metadata: {url}");
+    let data = tokio::task::spawn_blocking(move || {
+        payload_extract::input::read_ota_metadata(&url, false)
+    })
+    .await??;
+
+    if data.is_empty() {
+        return Ok("No META-INF/com/android/metadata entries found.".to_string());
+    }
+
+    let mut out = String::new();
+
+    if let Some(text) = &data.text {
+        out.push_str("OTA Metadata (text):\n");
+        for (k, v) in &text.entries {
+            out.push_str(&format!("  {k}: {v}\n"));
+        }
+    }
+
+    if let Some(pb) = &data.pb {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("OTA Metadata (protobuf):\n");
+        out.push_str(&format!("  Type: {}\n", pb.r#type));
+        out.push_str(&format!("  Wipe: {}\n", pb.wipe));
+        out.push_str(&format!("  Downgrade: {}\n", pb.downgrade));
+        out.push_str(&format!("  SPL downgrade: {}\n", pb.spl_downgrade));
+        out.push_str(&format!(
+            "  Retrofit dynamic partitions: {}\n",
+            pb.retrofit_dynamic_partitions
+        ));
+        out.push_str(&format!("  Required cache: {}\n", pb.required_cache));
+
+        if let Some(pre) = &pb.precondition {
+            out.push_str("\n  Precondition:\n");
+            push_device_state(&mut out, pre, "    ");
+        }
+        if let Some(post) = &pb.postcondition {
+            out.push_str("\n  Postcondition:\n");
+            push_device_state(&mut out, post, "    ");
+        }
+        if !pb.property_files.is_empty() {
+            out.push_str("\n  Property files:\n");
+            for (k, v) in &pb.property_files {
+                out.push_str(&format!("    {k}: {v}\n"));
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn push_device_state(out: &mut String, d: &DeviceState, prefix: &str) {
+    if !d.device.is_empty() {
+        out.push_str(&format!("{}Devices: {}\n", prefix, d.device.join(", ")));
+    }
+    if !d.build.is_empty() {
+        out.push_str(&format!("{}Builds: {}\n", prefix, d.build.join(", ")));
+    }
+    if !d.build_incremental.is_empty() {
+        out.push_str(&format!("{}Build incremental: {}\n", prefix, d.build_incremental));
+    }
+    if d.timestamp != 0 {
+        out.push_str(&format!("{}Timestamp: {}\n", prefix, d.timestamp));
+    }
+    if !d.sdk_level.is_empty() {
+        out.push_str(&format!("{}SDK level: {}\n", prefix, d.sdk_level));
+    }
+    if !d.security_patch_level.is_empty() {
+        out.push_str(&format!(
+            "{}Security patch level: {}\n",
+            prefix, d.security_patch_level
+        ));
+    }
+    for ps in &d.partition_state {
+        let detail = if !ps.version.is_empty() {
+            format!(" version={}", ps.version)
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("{}Partition: {}{detail}\n", prefix, ps.partition_name));
+        if !ps.build.is_empty() {
+            out.push_str(&format!("{}  build: {}\n", prefix, ps.build.join(", ")));
+        }
+    }
 }
 
 pub async fn list_image(url: String) -> Result<String> {

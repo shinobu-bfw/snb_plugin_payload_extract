@@ -21,6 +21,10 @@ pub enum Command {
     Patch { arg: String },
     #[command(description = "List images in the payload")]
     List { arg: String },
+    #[command(description = "Show OTA metadata (short)")]
+    Meta { arg: String },
+    #[command(description = "Show OTA metadata")]
+    MetaData { arg: String },
     #[command(description = "Help cmd")]
     Help,
     #[command(description = "Start command")]
@@ -54,6 +58,16 @@ pub async fn answer(
             Command::List { arg } => {
                 if let Err(e) = list_cmd(bot, msg, arg).await {
                     error!("Error in list_cmd: {e}");
+                }
+            }
+            Command::MetaData { arg } => {
+                if let Err(e) = meta_cmd(bot, msg, arg).await {
+                    error!("Error in meta_data_cmd: {e}");
+                }
+            }
+            Command::Meta { arg } => {
+                if let Err(e) = meta_cmd(bot, msg, arg).await {
+                    error!("Error in meta_cmd: {e}");
                 }
             }
             Command::Help | Command::Start => {

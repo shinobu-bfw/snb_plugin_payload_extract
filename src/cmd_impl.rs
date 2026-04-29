@@ -21,6 +21,9 @@ const HELP_MESSAGE: &str = r#"*[Payload dumper bot written in rust](https://gith
 > `/list \[url]`
 >   List partition info of url
 >
+> `/meta \[url]`
+>   Show OTA metadata from the OTA zip
+>
 > `/patch \[url] \[partition] \[kmi]`
 >   Patch a boot partition with KernelSU
 >    `partition`: boot\(b\), init\_boot\(ib\), vendor\_boot\(vb\)
@@ -194,6 +197,50 @@ pub async fn dump_cmd(
                 status_msg.chat.id,
                 status_msg.id,
                 format!("Failed to dump partitions: {e}"),
+            )
+            .await?;
+        }
+    }
+    Ok(status_msg)
+}
+
+pub async fn meta_cmd(bot: Bot, msg: Message, arg: String) -> Result<Message, RequestError> {
+    let Some(url) = arg.split_whitespace().next() else {
+        return bot
+            .send_message(msg.chat.id, "Invalid command! Usage: /meta <url>")
+            .reply_to(msg.id)
+            .await;
+    };
+    info!("{}: Received meta command, url: {url}", msg.chat.id);
+    debug!(
+        "{}: Sender: {}, chat_id: {}",
+        msg.id,
+        msg.from.unwrap().id,
+        msg.chat.id
+    );
+    let status_msg = bot
+        .send_message(msg.chat.id, "Fetching OTA metadata...")
+        .reply_to(msg.id)
+        .await?;
+    match payload::read_ota_metadata(url.to_string()).await {
+        Ok(text) => {
+            let escaped = text
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            let html_message = format!("<pre>{escaped}</pre>");
+            bot.send_message(msg.chat.id, html_message)
+                .parse_mode(ParseMode::Html)
+                .reply_to(msg.id)
+                .await?;
+            delete_later(&bot, status_msg.chat.id, status_msg.id).await?;
+        }
+        Err(e) => {
+            error!("Failed to fetch OTA metadata: {e}");
+            bot.edit_message_text(
+                status_msg.chat.id,
+                status_msg.id,
+                format!("Failed to fetch OTA metadata: {e}"),
             )
             .await?;
         }
