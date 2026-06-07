@@ -18,3 +18,4 @@ bytes = "1"
 regex = "1"
 sysinfo = "0"
 humantime = "2"
+uuid = { version = "1", features = ["v4"] }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use log::{debug, info};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 use payload_extract::extract::{ExtractConfig, extract_partitions};
 use payload_extract::input::{open, open_for_extract};
@@ -29,8 +29,8 @@ pub async fn dump_partition(
     partitions.sort();
     partitions.dedup();
     tokio::task::spawn_blocking(move || {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let temp_dir = PathBuf::from("tmp").join(ts.to_string());
+        let temp_name = Uuid::new_v4().simple().to_string();
+        let temp_dir = PathBuf::from("tmp").join(temp_name);
         fs::create_dir_all(&temp_dir)?;
         info!("Dumping partitions to {}", temp_dir.display());
 
