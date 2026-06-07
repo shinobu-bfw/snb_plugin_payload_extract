@@ -22,8 +22,6 @@ async fn main() -> Result<()> {
     info!("Initializing tools");
     let tm = std::sync::Arc::new(tool::ToolManager::default());
     tm.init().await?;
-    info!("Cleaning temp files");
-    std::fs::remove_dir_all("tmp").ok();
     info!("Starting command bot...");
     let client = net::default_reqwest_settings().timeout(Duration::from_secs(120));
     let bot =

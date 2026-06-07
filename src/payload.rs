@@ -30,7 +30,7 @@ pub async fn dump_partition(
     partitions.dedup();
     tokio::task::spawn_blocking(move || {
         let temp_name = Uuid::new_v4().simple().to_string();
-        let temp_dir = PathBuf::from("tmp").join(temp_name);
+        let temp_dir = std::env::temp_dir().join(temp_name);
         fs::create_dir_all(&temp_dir)?;
         info!("Dumping partitions to {}", temp_dir.display());
 
