@@ -91,6 +91,11 @@ static PENDING_CLEANUPS: LazyLock<Mutex<HashMap<String, PathBuf>>> =
 static NEXT_STATUS_ID: AtomicU64 = AtomicU64::new(1);
 static PENDING_STATUS: LazyLock<Mutex<HashMap<String, StatusState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Status messages waiting to be deleted once a specific outgoing message (keyed
+/// by its local id) is acknowledged as sent. Used to keep the "Patching…" line
+/// visible until the patched file upload actually completes.
+static STATUS_DELETE_ON_SENT: LazyLock<Mutex<HashMap<String, StatusHandle>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[plugin]
 struct PayloadExtractBot;
@@ -148,6 +153,7 @@ impl SnbPlugin for PayloadExtractBot {
             return;
         };
         cleanup_registered_path(local_id);
+        finish_status_on_sent(local_id);
         if let Some(platform_id) = message.id.as_deref() {
             resolve_status_message(local_id, platform_id);
         }
@@ -408,12 +414,19 @@ async fn patch_command(request: CommandRequest) -> anyhow::Result<()> {
         .map(register_cleanup_path);
     emit_file_with_caption(
         &request,
-        cleanup_id,
+        cleanup_id.clone(),
         patch_caption_markdown(&patched),
         patched.path().to_path_buf(),
         file_name(patched.path()),
     );
-    status.finish();
+    // Delete the status only after the file upload is acknowledged; uploads can
+    // take a while, and removing it earlier would drop the "Patching…" line
+    // while the file is still in flight. If there is no id to wait on, the file
+    // send produces no ack, so delete right away.
+    match cleanup_id {
+        Some(id) => delete_status_when_sent(id, status),
+        None => status.finish(),
+    }
     Ok(())
 }
 
@@ -678,6 +691,25 @@ fn resolve_status_message(local_id: &str, platform_id: &str) {
 enum StatusAction {
     Edit(String),
     Delete,
+}
+
+/// Delete `status` once the message identified by `sent_local_id` is reported
+/// sent (its `MessageSent` ack arrives in `on_event`). This keeps the status
+/// line up while the file upload — which can take a while — is still in flight.
+fn delete_status_when_sent(sent_local_id: String, status: StatusHandle) {
+    STATUS_DELETE_ON_SENT
+        .lock()
+        .unwrap()
+        .insert(sent_local_id, status);
+}
+
+/// Flush any status message linked to a now-sent message id (see
+/// [`delete_status_when_sent`]).
+fn finish_status_on_sent(sent_local_id: &str) {
+    let handle = STATUS_DELETE_ON_SENT.lock().unwrap().remove(sent_local_id);
+    if let Some(handle) = handle {
+        handle.finish();
+    }
 }
 
 fn next_status_id() -> String {
