@@ -306,7 +306,15 @@ pub async fn patch_cmd(
         )
         .reply_to(msg.id)
         .await?;
-    match patch_boot(url.to_string(), patch_partition.to_string(), patch_kmi, tm).await {
+    match patch_boot(
+        url.to_string(),
+        patch_partition.to_string(),
+        patch_kmi,
+        tm,
+        crate::patch_boot::no_progress(),
+    )
+    .await
+    {
         Ok(patched_file) => {
             info!(
                 "Patch {patch_partition} with KernelSU successfully, patched file: {}",

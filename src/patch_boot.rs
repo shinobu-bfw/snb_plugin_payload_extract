@@ -34,10 +34,20 @@ impl PatchPartition {
     }
 }
 
+/// Reports coarse-grained patch progress (one message per phase). Cloneable and
+/// thread-safe so it can be handed to the blocking patch step.
+pub type ProgressFn = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// A progress callback that discards every update.
+pub fn no_progress() -> ProgressFn {
+    Arc::new(|_| {})
+}
+
 struct Patch {
     tm: Arc<crate::tool::ToolManager>,
     partition: PatchPartition,
     manual_kmi: Option<String>,
+    progress: ProgressFn,
 }
 
 pub struct PatchedFile {
@@ -86,10 +96,18 @@ impl Patch {
                 info!("Using manual kmi: {}", kmi);
                 (kmi.clone(), "N/A".to_string())
             }
-            None => get_kmi(magiskboot.clone(), dir.clone(), "boot.img")?,
+            None => {
+                (self.progress)("Parsing KMI from boot image...");
+                get_kmi(magiskboot.clone(), dir.clone(), "boot.img")?
+            }
         };
 
         let patched_name = format!("{patched_name}-{kmi}.img");
+
+        (self.progress)(&format!(
+            "Patching {} with KernelSU (KMI: {kmi})...",
+            self.partition.get_partition_name()
+        ));
 
         info!(
             "patching {} with kmi: {}, tool: {}",
@@ -135,17 +153,20 @@ pub async fn patch_boot(
     patch_partition: String,
     manual_kmi: Option<String>,
     tm: Arc<crate::tool::ToolManager>,
+    progress: ProgressFn,
 ) -> Result<PatchedFile> {
     info!("Patching boot: {url} {patch_partition}");
     let patch = Patch {
         partition: PatchPartition::from(&patch_partition)?,
         manual_kmi,
         tm,
+        progress,
     };
     let mut images = vec![patch.partition.get_partition_name().to_string()];
     if patch.manual_kmi.is_none() {
         images.push("boot".to_string());
     }
+    (patch.progress)("Downloading & extracting partitions...");
     let (_, dir) = dump_partition(url.clone(), images.join(",")).await?;
     match patch.patch(dir.clone()) {
         Ok(patched) => Ok(patched),

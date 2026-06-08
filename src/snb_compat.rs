@@ -53,6 +53,17 @@ struct State {
     tm: Arc<tool::ToolManager>,
 }
 
+/// Tracks a live status message whose native id is only known once the adapter
+/// echoes a [`EventType::MessageSent`] back. Edits/deletes requested before that
+/// point are stashed and flushed when the id arrives.
+struct StatusState {
+    to: Option<String>,
+    receiver: Option<String>,
+    platform_id: Option<String>,
+    pending_text: Option<String>,
+    pending_delete: bool,
+}
+
 #[derive(Clone)]
 struct CommandRequest {
     args: String,
@@ -76,6 +87,9 @@ enum CommandKind {
 static STATE: RwLock<Option<Arc<State>>> = RwLock::new(None);
 static NEXT_CLEANUP_ID: AtomicU64 = AtomicU64::new(1);
 static PENDING_CLEANUPS: LazyLock<Mutex<HashMap<String, PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT_STATUS_ID: AtomicU64 = AtomicU64::new(1);
+static PENDING_STATUS: LazyLock<Mutex<HashMap<String, StatusState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[plugin]
@@ -127,14 +141,16 @@ impl SnbPlugin for PayloadExtractBot {
             return;
         }
 
-        let Some(cleanup_id) = event
-            .message
-            .as_ref()
-            .and_then(|message| message.reply_to.as_deref())
-        else {
+        let Some(message) = event.message.as_ref() else {
             return;
         };
-        cleanup_registered_path(cleanup_id);
+        let Some(local_id) = message.reply_to.as_deref() else {
+            return;
+        };
+        cleanup_registered_path(local_id);
+        if let Some(platform_id) = message.id.as_deref() {
+            resolve_status_message(local_id, platform_id);
+        }
     }
 }
 
@@ -346,7 +362,7 @@ async fn patch_command(request: CommandRequest) -> anyhow::Result<()> {
     let partition = args[1].to_string();
     let kmi = args.get(2).map(|s| (*s).to_string());
 
-    emit_status_text(
+    let status = StatusHandle::emit(
         &request,
         match &kmi {
             Some(kmi) => format!("Patching {partition} with KernelSU (KMI: {kmi})..."),
@@ -354,17 +370,27 @@ async fn patch_command(request: CommandRequest) -> anyhow::Result<()> {
         },
     );
 
-    state.tm.init().await?;
-    let patched = match patch_boot::patch_boot(url, partition.clone(), kmi, state.tm.clone()).await
-    {
-        Ok(patched) => patched,
-        Err(e) => {
-            emit_text(&request, format!("Failed to patch {partition}: {e:#}"));
-            return Ok(());
-        }
+    if let Err(e) = state.tm.init().await {
+        status.finish();
+        emit_text(&request, format!("Failed to initialize tools: {e:#}"));
+        return Ok(());
+    }
+    let progress = {
+        let status = status.clone();
+        Arc::new(move |text: &str| status.update(text.to_string())) as patch_boot::ProgressFn
     };
+    let patched =
+        match patch_boot::patch_boot(url, partition.clone(), kmi, state.tm.clone(), progress).await {
+            Ok(patched) => patched,
+            Err(e) => {
+                status.finish();
+                emit_text(&request, format!("Failed to patch {partition}: {e:#}"));
+                return Ok(());
+            }
+        };
 
     if !patched.path().exists() {
+        status.finish();
         emit_text(
             &request,
             format!("Patched file {} not found!", patched.path().display()),
@@ -387,6 +413,7 @@ async fn patch_command(request: CommandRequest) -> anyhow::Result<()> {
         patched.path().to_path_buf(),
         file_name(patched.path()),
     );
+    status.finish();
     Ok(())
 }
 
@@ -511,6 +538,151 @@ fn emit_status_text(request: &CommandRequest, text: impl Into<String>) {
         Some(HINT_DELETE_DELAY),
         vec![text_item(text.into(), None)],
     );
+}
+
+/// A status message that updates in place as work progresses and is deleted on
+/// completion. The message is emitted with a local id; the native platform id
+/// arrives later via a `MessageSent` event (see [`resolve_status_message`]), so
+/// updates requested before then are stashed and flushed once it is known.
+///
+/// Cloning is cheap (just routing ids) — the shared state lives in
+/// `PENDING_STATUS` keyed by `local_id`, so a clone handed to a progress
+/// callback drives the same message.
+#[derive(Clone)]
+struct StatusHandle {
+    local_id: String,
+    to: Option<String>,
+    receiver: Option<String>,
+}
+
+impl StatusHandle {
+    /// Emit the initial status message (no auto-delete) and start tracking it.
+    fn emit(request: &CommandRequest, text: impl Into<String>) -> Self {
+        let local_id = next_status_id();
+        PENDING_STATUS.lock().unwrap().insert(
+            local_id.clone(),
+            StatusState {
+                to: request.to.clone(),
+                receiver: request.receiver.clone(),
+                platform_id: None,
+                pending_text: None,
+                pending_delete: false,
+            },
+        );
+        emit_content(
+            request,
+            Some(local_id.clone()),
+            None,
+            vec![text_item(text.into(), None)],
+        );
+        Self {
+            local_id,
+            to: request.to.clone(),
+            receiver: request.receiver.clone(),
+        }
+    }
+
+    /// Replace the status text. Edits in place once the native id is known,
+    /// otherwise stashes the latest text for [`resolve_status_message`].
+    fn update(&self, text: impl Into<String>) {
+        let text = text.into();
+        let platform_id = {
+            let mut map = PENDING_STATUS.lock().unwrap();
+            let Some(state) = map.get_mut(&self.local_id) else {
+                return;
+            };
+            match &state.platform_id {
+                Some(id) => id.clone(),
+                None => {
+                    state.pending_text = Some(text);
+                    return;
+                }
+            }
+        };
+        self.emit_edit(&platform_id, text);
+    }
+
+    /// Delete the status message and stop tracking it. If the native id is not
+    /// known yet, the deletion is deferred until it arrives.
+    fn finish(self) {
+        let platform_id = {
+            let mut map = PENDING_STATUS.lock().unwrap();
+            let Some(state) = map.get_mut(&self.local_id) else {
+                return;
+            };
+            match &state.platform_id {
+                Some(id) => id.clone(),
+                None => {
+                    state.pending_text = None;
+                    state.pending_delete = true;
+                    return;
+                }
+            }
+        };
+        PENDING_STATUS.lock().unwrap().remove(&self.local_id);
+        self.emit_delete(&platform_id);
+    }
+
+    fn emit_edit(&self, platform_id: &str, text: String) {
+        let mut event = Event::message_edit("PayloadExtractBot", platform_id, text, None);
+        if let Some(message) = event.message.as_mut() {
+            message.to = self.to.clone();
+        }
+        event.receiver = self.receiver.clone();
+        context::bot().emit_event(event);
+    }
+
+    fn emit_delete(&self, platform_id: &str) {
+        let mut event = Event::message_delete("PayloadExtractBot", platform_id);
+        if let Some(message) = event.message.as_mut() {
+            message.to = self.to.clone();
+        }
+        event.receiver = self.receiver.clone();
+        context::bot().emit_event(event);
+    }
+}
+
+/// Record the native id for a status message and flush any update/delete that
+/// was requested before the id was known. Called from `on_event` when the
+/// adapter echoes back a `MessageSent` for our local status id.
+fn resolve_status_message(local_id: &str, platform_id: &str) {
+    let (handle, action) = {
+        let mut map = PENDING_STATUS.lock().unwrap();
+        let Some(state) = map.get_mut(local_id) else {
+            return;
+        };
+        state.platform_id = Some(platform_id.to_string());
+        let handle = StatusHandle {
+            local_id: local_id.to_string(),
+            to: state.to.clone(),
+            receiver: state.receiver.clone(),
+        };
+        if state.pending_delete {
+            (handle, StatusAction::Delete)
+        } else if let Some(text) = state.pending_text.take() {
+            (handle, StatusAction::Edit(text))
+        } else {
+            return;
+        }
+    };
+
+    match action {
+        StatusAction::Delete => {
+            PENDING_STATUS.lock().unwrap().remove(local_id);
+            handle.emit_delete(platform_id);
+        }
+        StatusAction::Edit(text) => handle.emit_edit(platform_id, text),
+    }
+}
+
+enum StatusAction {
+    Edit(String),
+    Delete,
+}
+
+fn next_status_id() -> String {
+    let id = NEXT_STATUS_ID.fetch_add(1, Ordering::Relaxed);
+    format!("{PLUGIN_NAME}:status:{id}")
 }
 
 fn emit_files_with_caption(
