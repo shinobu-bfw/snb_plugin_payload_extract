@@ -123,8 +123,9 @@ impl SnbPlugin for PayloadExtractBot {
 
     fn on_load(&mut self, ctx: Arc<dyn BotContext>) {
         context::set_bot(ctx.clone());
+        context::set_plugin(self.name());
 
-        match init_state(ctx.as_ref(), self.name()) {
+        match init_state(self.name()) {
             Ok(state) => {
                 *STATE.write().unwrap() = Some(Arc::new(state));
                 context::register_all(self.name());
@@ -160,22 +161,22 @@ impl SnbPlugin for PayloadExtractBot {
     }
 }
 
-fn init_state(ctx: &dyn BotContext, plugin_name: &str) -> anyhow::Result<State> {
-    let cfg = Arc::new(load_plugin_config(ctx, plugin_name)?);
-    let bin_root = ctx.data_dir(plugin_name).join("bin");
+fn init_state(plugin_name: &str) -> anyhow::Result<State> {
+    let cfg = Arc::new(load_plugin_config(plugin_name)?);
+    let bin_root = context::plugin().data_dir().join("bin");
     let tm = Arc::new(tool::ToolManager::try_with_bin_root(bin_root)?);
     Ok(State { cfg, tm })
 }
 
-fn load_plugin_config(ctx: &dyn BotContext, plugin_name: &str) -> anyhow::Result<config::Config> {
-    let config_path = Path::new("PayloadExtractBot/config.toml");
-    match ctx.load_config(config_path) {
+fn load_plugin_config(plugin_name: &str) -> anyhow::Result<config::Config> {
+    match context::plugin().load_config(Path::new("config.toml")) {
         Ok(content) => toml::from_str(&content).context("failed to parse PayloadExtractBot config"),
         Err(_) => {
             let default = config::Config::default();
             let content =
                 toml::to_string_pretty(&default).context("failed to render default config")?;
-            ctx.write_config(plugin_name, Path::new("config.toml"), &content)
+            context::plugin()
+                .write_config(Path::new("config.toml"), &content)
                 .context("failed to write default PayloadExtractBot config")?;
             log::warn!(
                 "config not found, default config written to configs/{PLUGIN_NAME}/config.toml"
