@@ -1,6 +1,7 @@
 use anyhow::Result;
 use log::{debug, info};
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -34,41 +35,58 @@ pub async fn dump_partition(
         fs::create_dir_all(&temp_dir)?;
         info!("Dumping partitions to {}", temp_dir.display());
 
-        let payload = open_for_extract(&url, &partitions, false)?;
+        let result: Result<Vec<PartitionInfo>> = (|| {
+            let payload = open_for_extract(&url, &partitions, false)?;
 
-        let files = payload
-            .partitions()
-            .iter()
-            .filter(|p| partitions.iter().any(|name| name == &p.partition_name))
-            .map(|partition_update| PartitionInfo {
-                name: partition_update.partition_name.clone(),
-                size: partition_size_bytes(partition_update),
-                hash: partition_hash(partition_update),
-                path: temp_dir.join(format!("{}.img", partition_update.partition_name)),
-            })
-            .collect::<Vec<_>>();
+            let files = payload
+                .partitions()
+                .iter()
+                .filter(|p| partitions.iter().any(|name| name == &p.partition_name))
+                .map(|partition_update| PartitionInfo {
+                    name: partition_update.partition_name.clone(),
+                    size: partition_size_bytes(partition_update),
+                    hash: partition_hash(partition_update),
+                    path: temp_dir.join(format!("{}.img", partition_update.partition_name)),
+                })
+                .collect::<Vec<_>>();
 
-        let config = ExtractConfig {
-            verify_ops: false,
-            threads: 0,
-            quiet: true,
-            source_dir: None,
-            out_config: None,
-        };
+            let config = ExtractConfig {
+                verify_ops: false,
+                threads: 0,
+                quiet: true,
+                source_dir: None,
+                out_config: None,
+            };
 
-        extract_partitions(&payload, &temp_dir, &partitions, &config)?;
+            extract_partitions(&payload, &temp_dir, &partitions, &config)?;
 
-        Ok((files, temp_dir))
+            Ok(files)
+        })();
+
+        match result {
+            Ok(files) => Ok((files, temp_dir)),
+            Err(e) => {
+                cleanup_temp_dir(&temp_dir);
+                Err(e)
+            }
+        }
     })
     .await?
 }
 
+fn cleanup_temp_dir(dir: &PathBuf) {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("failed to clean up {}: {e}", dir.display()),
+    }
+}
+
 pub async fn read_ota_metadata(url: String) -> Result<String> {
     info!("Reading OTA metadata: {url}");
-    let data = tokio::task::spawn_blocking(move || {
-        payload_extract::input::read_ota_metadata(&url, false)
-    })
-    .await??;
+    let data =
+        tokio::task::spawn_blocking(move || payload_extract::input::read_ota_metadata(&url, false))
+            .await??;
 
     if data.is_empty() {
         return Ok("No META-INF/com/android/metadata entries found.".to_string());
@@ -125,7 +143,10 @@ fn push_device_state(out: &mut String, d: &DeviceState, prefix: &str) {
         out.push_str(&format!("{}Builds: {}\n", prefix, d.build.join(", ")));
     }
     if !d.build_incremental.is_empty() {
-        out.push_str(&format!("{}Build incremental: {}\n", prefix, d.build_incremental));
+        out.push_str(&format!(
+            "{}Build incremental: {}\n",
+            prefix, d.build_incremental
+        ));
     }
     if d.timestamp != 0 {
         out.push_str(&format!("{}Timestamp: {}\n", prefix, d.timestamp));
@@ -145,7 +166,10 @@ fn push_device_state(out: &mut String, d: &DeviceState, prefix: &str) {
         } else {
             String::new()
         };
-        out.push_str(&format!("{}Partition: {}{detail}\n", prefix, ps.partition_name));
+        out.push_str(&format!(
+            "{}Partition: {}{detail}\n",
+            prefix, ps.partition_name
+        ));
         if !ps.build.is_empty() {
             out.push_str(&format!("{}  build: {}\n", prefix, ps.build.join(", ")));
         }

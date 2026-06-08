@@ -3,6 +3,8 @@ name = "payload_extract_bot"
 version = "0.1.3"
 edition = "2024"
 
+[workspace]
+
 [dependencies]
 teloxide = { version = "0", features = ["macros"] }
 log = "0"

@@ -3,9 +3,9 @@ use crate::tool::*;
 use anyhow::{Context, Result, bail};
 use log::info;
 use regex::Regex;
-use std::fs::File;
-use std::io::{BufReader, Read};
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::{self, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
@@ -46,6 +46,28 @@ pub struct PatchedFile {
     pub(crate) kernel_version: String,
     pub(crate) patch_method: String,
     pub(crate) patch_version: String,
+}
+
+impl PatchedFile {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn kmi(&self) -> &str {
+        &self.kmi
+    }
+
+    pub fn kernel_version(&self) -> &str {
+        &self.kernel_version
+    }
+
+    pub fn patch_method(&self) -> &str {
+        &self.patch_method
+    }
+
+    pub fn patch_version(&self) -> &str {
+        &self.patch_version
+    }
 }
 
 impl Patch {
@@ -120,7 +142,21 @@ pub async fn patch_boot(
         images.push("boot".to_string());
     }
     let (_, dir) = dump_partition(url.clone(), images.join(",")).await?;
-    patch.patch(dir)
+    match patch.patch(dir.clone()) {
+        Ok(patched) => Ok(patched),
+        Err(e) => {
+            cleanup_temp_dir(&dir);
+            Err(e)
+        }
+    }
+}
+
+fn cleanup_temp_dir(dir: &PathBuf) {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("failed to clean up {}: {e}", dir.display()),
+    }
 }
 
 fn get_kmi(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<(String, String)> {

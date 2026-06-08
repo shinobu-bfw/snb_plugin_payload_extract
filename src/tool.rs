@@ -15,6 +15,7 @@ pub struct Basis {
     os: &'static str,
     arch: &'static str,
     suffix: &'static str,
+    bin_root: PathBuf,
 }
 
 pub trait Tool {
@@ -48,9 +49,7 @@ pub struct Magiskboot(BaseTool);
 
 impl Tool for Ksud {
     fn from(basis: Basis) -> Self {
-        let current_dir = std::env::current_dir().unwrap();
-
-        let mut bin = current_dir.join("bin").join(basis.os).join(basis.arch);
+        let mut bin = basis.bin_root.join(basis.os).join(basis.arch);
         bin.push(format!("{}{}", "ksud", basis.suffix));
         Self(BaseTool {
             basis: basis.clone(),
@@ -75,9 +74,7 @@ impl Tool for Ksud {
 
 impl Tool for Magiskboot {
     fn from(basis: Basis) -> Self {
-        let current_dir = std::env::current_dir().unwrap();
-
-        let mut bin = current_dir.join("bin").join(basis.os).join(basis.arch);
+        let mut bin = basis.bin_root.join(basis.os).join(basis.arch);
         bin.push(format!("{}{}", "magiskboot", basis.suffix));
         Self(BaseTool {
             basis: basis.clone(),
@@ -306,6 +303,14 @@ impl Default for ToolManager {
 }
 
 impl ToolManager {
+    #[allow(dead_code)]
+    pub fn try_with_bin_root(bin_root: PathBuf) -> Result<Self> {
+        let basis = Basis::try_with_bin_root(bin_root)?;
+        let ksud = <Ksud as Tool>::from(basis.clone());
+        let magiskboot = <Magiskboot as Tool>::from(basis.clone());
+        Ok(Self { ksud, magiskboot })
+    }
+
     pub async fn init(&self) -> Result<()> {
         debug!("Initializing tools");
         self.ksud.init().await?;
@@ -337,29 +342,38 @@ impl ToolManager {
 
 impl Default for Basis {
     fn default() -> Self {
-        let os = match OS {
-            "linux" => "linux",
-            "android" => "android",
-            _ => "Unknown",
-        };
-        let arch = match ARCH {
-            "x86_64" => "x86_64",
-            "aarch64" => "aarch64",
-            _ => "Unknown",
-        };
-        if os == "Unknown" || arch == "Unknown" {
-            let msg = format!("Unsupported platform and arch {OS}/{ARCH}");
+        let bin_root = std::env::current_dir().unwrap().join("bin");
+        Self::try_with_bin_root(bin_root).unwrap_or_else(|e| {
+            let msg = e.to_string();
             println!("{msg}");
             error!("{msg}");
             exit(1);
-        }
-        let suffix = if os == "Windows" { ".exe" } else { "" };
-
-        Self { os, arch, suffix }
+        })
     }
 }
 
 impl Basis {
+    pub fn try_with_bin_root(bin_root: PathBuf) -> Result<Self> {
+        let os = match OS {
+            "linux" => "linux",
+            "android" => "android",
+            other => bail!("Unsupported platform: {other}"),
+        };
+        let arch = match ARCH {
+            "x86_64" => "x86_64",
+            "aarch64" => "aarch64",
+            other => bail!("Unsupported architecture: {other}"),
+        };
+        let suffix = "";
+
+        Ok(Self {
+            os,
+            arch,
+            suffix,
+            bin_root,
+        })
+    }
+
     pub fn android_abi(&self) -> &'static str {
         match self.arch {
             "x86_64" => "x86_64",
