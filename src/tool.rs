@@ -18,6 +18,7 @@ pub struct Basis {
     bin_root: PathBuf,
 }
 
+#[allow(async_fn_in_trait)]
 pub trait Tool {
     fn from(basis: Basis) -> Self;
     fn get_name(&self) -> String;

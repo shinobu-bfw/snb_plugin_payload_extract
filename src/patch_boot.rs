@@ -49,22 +49,27 @@ pub struct PatchedFile {
 }
 
 impl PatchedFile {
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    #[allow(dead_code)]
     pub fn kmi(&self) -> &str {
         &self.kmi
     }
 
+    #[allow(dead_code)]
     pub fn kernel_version(&self) -> &str {
         &self.kernel_version
     }
 
+    #[allow(dead_code)]
     pub fn patch_method(&self) -> &str {
         &self.patch_method
     }
 
+    #[allow(dead_code)]
     pub fn patch_version(&self) -> &str {
         &self.patch_version
     }
