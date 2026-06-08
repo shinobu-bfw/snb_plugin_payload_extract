@@ -125,7 +125,7 @@ impl SnbPlugin for PayloadExtractBot {
         context::set_bot(ctx.clone());
         context::set_plugin(self.name());
 
-        match init_state(self.name()) {
+        match init_state() {
             Ok(state) => {
                 *STATE.write().unwrap() = Some(Arc::new(state));
                 context::register_all(self.name());
@@ -161,14 +161,14 @@ impl SnbPlugin for PayloadExtractBot {
     }
 }
 
-fn init_state(plugin_name: &str) -> anyhow::Result<State> {
-    let cfg = Arc::new(load_plugin_config(plugin_name)?);
+fn init_state() -> anyhow::Result<State> {
+    let cfg = Arc::new(load_plugin_config()?);
     let bin_root = context::plugin().data_dir().join("bin");
     let tm = Arc::new(tool::ToolManager::try_with_bin_root(bin_root)?);
     Ok(State { cfg, tm })
 }
 
-fn load_plugin_config(plugin_name: &str) -> anyhow::Result<config::Config> {
+fn load_plugin_config() -> anyhow::Result<config::Config> {
     match context::plugin().load_config(Path::new("config.toml")) {
         Ok(content) => toml::from_str(&content).context("failed to parse PayloadExtractBot config"),
         Err(_) => {
