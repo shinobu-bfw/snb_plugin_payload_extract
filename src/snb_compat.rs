@@ -2,21 +2,35 @@
 
 use payload_extract_bot::{config, patch_boot, payload, tool, utils};
 
-use std::collections::HashMap;
-use std::fs;
 use std::future::Future;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
 use snb_core::command::CommandContext;
 use snb_core::context::{self, BotContext};
-use snb_core::event::{ContentItem, Event, EventType, FileSource, Message, TextFormat};
+use snb_core::event::{Event, EventType, TextFormat};
 use snb_core::plugin::{PluginType, SnbPlugin, Version};
 use snb_macros::{command, plugin};
+
+#[path = "snb_compat/auth.rs"]
+mod auth;
+#[path = "snb_compat/cleanup.rs"]
+mod cleanup;
+#[path = "snb_compat/output.rs"]
+mod output;
+#[path = "snb_compat/status.rs"]
+mod status;
+
+use auth::is_admin;
+use cleanup::{cleanup_path_now, cleanup_registered_path, register_cleanup_path};
+use output::{
+    dump_caption_markdown, emit_file_with_caption, emit_files_with_caption, emit_formatted_text,
+    emit_html_blockquote, emit_status_text, emit_temporary_text, emit_text, file_name,
+    patch_caption_markdown,
+};
+use status::{StatusHandle, delete_status_when_sent, finish_status_on_sent, resolve_status_message};
 
 const PLUGIN_NAME: &str = "PayloadExtractBot";
 const CLEANUP_DELAY: Duration = Duration::from_secs(30 * 60);
@@ -53,17 +67,6 @@ struct State {
     tm: Arc<tool::ToolManager>,
 }
 
-/// Tracks a live status message whose native id is only known once the adapter
-/// echoes a [`EventType::MessageSent`] back. Edits/deletes requested before that
-/// point are stashed and flushed when the id arrives.
-struct StatusState {
-    to: Option<String>,
-    receiver: Option<String>,
-    platform_id: Option<String>,
-    pending_text: Option<String>,
-    pending_delete: bool,
-}
-
 #[derive(Clone)]
 struct CommandRequest {
     args: String,
@@ -86,17 +89,6 @@ enum CommandKind {
 }
 
 static STATE: RwLock<Option<Arc<State>>> = RwLock::new(None);
-static NEXT_CLEANUP_ID: AtomicU64 = AtomicU64::new(1);
-static PENDING_CLEANUPS: LazyLock<Mutex<HashMap<String, PathBuf>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static NEXT_STATUS_ID: AtomicU64 = AtomicU64::new(1);
-static PENDING_STATUS: LazyLock<Mutex<HashMap<String, StatusState>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-/// Status messages waiting to be deleted once a specific outgoing message (keyed
-/// by its local id) is acknowledged as sent. Used to keep the "Patching…" line
-/// visible until the patched file upload actually completes.
-static STATUS_DELETE_ON_SENT: LazyLock<Mutex<HashMap<String, StatusHandle>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[plugin]
 struct PayloadExtractBot;
@@ -422,10 +414,6 @@ async fn patch_command(request: CommandRequest) -> anyhow::Result<()> {
         patched.path().to_path_buf(),
         file_name(patched.path()),
     );
-    // Delete the status only after the file upload is acknowledged; uploads can
-    // take a while, and removing it earlier would drop the "Patching…" line
-    // while the file is still in flight. If there is no id to wait on, the file
-    // send produces no ack, so delete right away.
     match cleanup_id {
         Some(id) => delete_status_when_sent(id, status),
         None => status.finish(),
@@ -471,475 +459,6 @@ fn unsupported_partitions(partition: &str, supported: &[String]) -> Vec<String> 
         .collect()
 }
 
-fn is_admin(request: &CommandRequest, cfg: &config::Config) -> bool {
-    if request.is_admin {
-        return true;
-    }
-
-    let Some(user_id) = request
-        .from
-        .as_deref()
-        .and_then(|from| from.parse::<i64>().ok())
-    else {
-        log::warn!("admin command rejected: no sender info");
-        return false;
-    };
-
-    if cfg.admin_users.contains(&user_id) {
-        return true;
-    }
-
-    log::warn!("admin command rejected: user {user_id} is not an admin");
-    false
-}
-
-fn dump_caption_markdown(files: &[payload::PartitionInfo]) -> String {
-    let mut out = String::new();
-    for file in files {
-        out.push_str(&format!(
-            "> `{}`\\(`{}`\\): `{}`\n>\n",
-            escape_markdown_v2_code(&file.name),
-            escape_markdown_v2_code(&format_size(file.size)),
-            escape_markdown_v2_code(file.hash.as_deref().unwrap_or("N/A").trim_matches('"'))
-        ));
-    }
-    out
-}
-
-fn patch_caption_markdown(patched: &patch_boot::PatchedFile) -> String {
-    format!(
-        ">Patch Method: `{}`\n>Patch Version: `{}`\n>KMI: `{}`\n>Kernel Version: `{}`",
-        escape_markdown_v2_code(patched.patch_method()),
-        escape_markdown_v2_code(patched.patch_version()),
-        escape_markdown_v2_code(patched.kmi()),
-        escape_markdown_v2_code(patched.kernel_version())
-    )
-}
-
-fn emit_text(request: &CommandRequest, text: impl Into<String>) {
-    let text = text.into();
-    for chunk in split_message(&text) {
-        emit_content(request, None, None, vec![text_item(chunk, None)]);
-    }
-}
-
-fn emit_formatted_text(request: &CommandRequest, text: impl Into<String>, format: TextFormat) {
-    let text = text.into();
-    for chunk in split_message(&text) {
-        emit_content(request, None, None, vec![text_item(chunk, Some(format))]);
-    }
-}
-
-fn emit_html_blockquote(request: &CommandRequest, text: impl Into<String>) {
-    let text = text.into();
-    for chunk in split_message(&text) {
-        emit_content(
-            request,
-            None,
-            None,
-            vec![text_item(html_blockquote(&chunk), Some(TextFormat::Html))],
-        );
-    }
-}
-
-fn emit_temporary_text(request: &CommandRequest, text: impl Into<String>) {
-    emit_content(
-        request,
-        None,
-        Some(HINT_DELETE_DELAY),
-        vec![text_item(text.into(), None)],
-    );
-}
-
-fn emit_status_text(request: &CommandRequest, text: impl Into<String>) {
-    emit_content(
-        request,
-        None,
-        Some(HINT_DELETE_DELAY),
-        vec![text_item(text.into(), None)],
-    );
-}
-
-/// A status message that updates in place as work progresses and is deleted on
-/// completion. The message is emitted with a local id; the native platform id
-/// arrives later via a `MessageSent` event (see [`resolve_status_message`]), so
-/// updates requested before then are stashed and flushed once it is known.
-///
-/// Cloning is cheap (just routing ids) — the shared state lives in
-/// `PENDING_STATUS` keyed by `local_id`, so a clone handed to a progress
-/// callback drives the same message.
-#[derive(Clone)]
-struct StatusHandle {
-    local_id: String,
-    to: Option<String>,
-    receiver: Option<String>,
-}
-
-impl StatusHandle {
-    /// Emit the initial status message (no auto-delete) and start tracking it.
-    fn emit(request: &CommandRequest, text: impl Into<String>) -> Self {
-        let local_id = next_status_id();
-        PENDING_STATUS.lock().unwrap().insert(
-            local_id.clone(),
-            StatusState {
-                to: request.to.clone(),
-                receiver: request.receiver.clone(),
-                platform_id: None,
-                pending_text: None,
-                pending_delete: false,
-            },
-        );
-        emit_content(
-            request,
-            Some(local_id.clone()),
-            None,
-            vec![text_item(text.into(), None)],
-        );
-        Self {
-            local_id,
-            to: request.to.clone(),
-            receiver: request.receiver.clone(),
-        }
-    }
-
-    /// Replace the status text. Edits in place once the native id is known,
-    /// otherwise stashes the latest text for [`resolve_status_message`].
-    fn update(&self, text: impl Into<String>) {
-        let text = text.into();
-        let platform_id = {
-            let mut map = PENDING_STATUS.lock().unwrap();
-            let Some(state) = map.get_mut(&self.local_id) else {
-                return;
-            };
-            match &state.platform_id {
-                Some(id) => id.clone(),
-                None => {
-                    state.pending_text = Some(text);
-                    return;
-                }
-            }
-        };
-        self.emit_edit(&platform_id, text);
-    }
-
-    /// Delete the status message and stop tracking it. If the native id is not
-    /// known yet, the deletion is deferred until it arrives.
-    fn finish(self) {
-        let platform_id = {
-            let mut map = PENDING_STATUS.lock().unwrap();
-            let Some(state) = map.get_mut(&self.local_id) else {
-                return;
-            };
-            match &state.platform_id {
-                Some(id) => id.clone(),
-                None => {
-                    state.pending_text = None;
-                    state.pending_delete = true;
-                    return;
-                }
-            }
-        };
-        PENDING_STATUS.lock().unwrap().remove(&self.local_id);
-        self.emit_delete(&platform_id);
-    }
-
-    fn emit_edit(&self, platform_id: &str, text: String) {
-        let mut event = Event::message_edit("PayloadExtractBot", platform_id, text, None);
-        if let Some(message) = event.message.as_mut() {
-            message.to = self.to.clone();
-        }
-        event.receiver = self.receiver.clone();
-        context::bot().emit_event(event);
-    }
-
-    fn emit_delete(&self, platform_id: &str) {
-        let mut event = Event::message_delete("PayloadExtractBot", platform_id);
-        if let Some(message) = event.message.as_mut() {
-            message.to = self.to.clone();
-        }
-        event.receiver = self.receiver.clone();
-        context::bot().emit_event(event);
-    }
-}
-
-/// Record the native id for a status message and flush any update/delete that
-/// was requested before the id was known. Called from `on_event` when the
-/// adapter echoes back a `MessageSent` for our local status id.
-fn resolve_status_message(local_id: &str, platform_id: &str) {
-    let (handle, action) = {
-        let mut map = PENDING_STATUS.lock().unwrap();
-        let Some(state) = map.get_mut(local_id) else {
-            return;
-        };
-        state.platform_id = Some(platform_id.to_string());
-        let handle = StatusHandle {
-            local_id: local_id.to_string(),
-            to: state.to.clone(),
-            receiver: state.receiver.clone(),
-        };
-        if state.pending_delete {
-            (handle, StatusAction::Delete)
-        } else if let Some(text) = state.pending_text.take() {
-            (handle, StatusAction::Edit(text))
-        } else {
-            return;
-        }
-    };
-
-    match action {
-        StatusAction::Delete => {
-            PENDING_STATUS.lock().unwrap().remove(local_id);
-            handle.emit_delete(platform_id);
-        }
-        StatusAction::Edit(text) => handle.emit_edit(platform_id, text),
-    }
-}
-
-enum StatusAction {
-    Edit(String),
-    Delete,
-}
-
-/// Delete `status` once the message identified by `sent_local_id` is reported
-/// sent (its `MessageSent` ack arrives in `on_event`). This keeps the status
-/// line up while the file upload — which can take a while — is still in flight.
-fn delete_status_when_sent(sent_local_id: String, status: StatusHandle) {
-    STATUS_DELETE_ON_SENT
-        .lock()
-        .unwrap()
-        .insert(sent_local_id, status);
-}
-
-/// Flush any status message linked to a now-sent message id (see
-/// [`delete_status_when_sent`]).
-fn finish_status_on_sent(sent_local_id: &str) {
-    let handle = STATUS_DELETE_ON_SENT.lock().unwrap().remove(sent_local_id);
-    if let Some(handle) = handle {
-        handle.finish();
-    }
-}
-
-fn next_status_id() -> String {
-    let id = NEXT_STATUS_ID.fetch_add(1, Ordering::Relaxed);
-    format!("{PLUGIN_NAME}:status:{id}")
-}
-
-fn emit_files_with_caption(
-    request: &CommandRequest,
-    id: Option<String>,
-    caption: impl Into<String>,
-    files: &[payload::PartitionInfo],
-) {
-    let mut content = vec![text_item(caption.into(), Some(TextFormat::MarkdownV2))];
-    content.extend(files.iter().map(|file| ContentItem::File {
-        source: FileSource::Path(file.path.to_string_lossy().into_owned()),
-        file_name: file_name(&file.path),
-        file_id: None,
-    }));
-    emit_content(request, id, None, content);
-}
-
-fn emit_file_with_caption(
-    request: &CommandRequest,
-    id: Option<String>,
-    caption: impl Into<String>,
-    path: PathBuf,
-    file_name: Option<String>,
-) {
-    emit_content(
-        request,
-        id,
-        None,
-        vec![
-            text_item(caption.into(), Some(TextFormat::MarkdownV2)),
-            ContentItem::File {
-                source: FileSource::Path(path.to_string_lossy().into_owned()),
-                file_name,
-                file_id: None,
-            },
-        ],
-    );
-}
-
-fn emit_content(
-    request: &CommandRequest,
-    id: Option<String>,
-    delete_after: Option<Duration>,
-    content: Vec<ContentItem>,
-) {
-    let event = Event {
-        event_type: EventType::Message,
-        source: PLUGIN_NAME.to_string(),
-        data: String::new(),
-        command: None,
-        message: Some(Message {
-            id,
-            reply_to: request.reply_to.clone(),
-            content,
-            from: None,
-            to: request.to.clone(),
-            at: Vec::new(),
-            chat_type: None,
-            is_admin: false,
-            delete_after,
-        }),
-        sender: None,
-        receiver: request.receiver.clone(),
-    };
-    context::bot().emit_event(event);
-}
-
-fn text_item(text: impl Into<String>, format: Option<TextFormat>) -> ContentItem {
-    ContentItem::Text {
-        text: text.into(),
-        format,
-    }
-}
-
-fn html_blockquote(text: &str) -> String {
-    let escaped = text
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    format!("<blockquote expandable>{escaped}</blockquote>")
-}
-
-fn escape_markdown_v2_code(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('`', "\\`")
-}
-
-fn split_message(text: &str) -> Vec<String> {
-    const MAX_LEN: usize = 3500;
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-    if text.len() <= MAX_LEN {
-        return vec![text.to_string()];
-    }
-
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    for line in text.lines() {
-        let line_len = line.len() + usize::from(!current.is_empty());
-        if !current.is_empty() && current.len() + line_len > MAX_LEN {
-            chunks.push(std::mem::take(&mut current));
-        }
-        if line.len() > MAX_LEN {
-            if !current.is_empty() {
-                chunks.push(std::mem::take(&mut current));
-            }
-            let mut buf = String::new();
-            for ch in line.chars() {
-                if buf.len() + ch.len_utf8() > MAX_LEN {
-                    chunks.push(std::mem::take(&mut buf));
-                }
-                buf.push(ch);
-            }
-            if !buf.is_empty() {
-                chunks.push(buf);
-            }
-        } else {
-            if !current.is_empty() {
-                current.push('\n');
-            }
-            current.push_str(line);
-        }
-    }
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
-}
-
-fn register_cleanup_path(path: PathBuf) -> String {
-    let id = next_cleanup_id();
-    PENDING_CLEANUPS.lock().unwrap().insert(id.clone(), path);
-
-    let cleanup_id = id.clone();
-    spawn_task(async move {
-        tokio::time::sleep(CLEANUP_DELAY).await;
-        let Some(path) = PENDING_CLEANUPS.lock().unwrap().remove(&cleanup_id) else {
-            return;
-        };
-        cleanup_path_now(path);
-    });
-
-    id
-}
-
-fn cleanup_registered_path(cleanup_id: &str) {
-    let Some(path) = PENDING_CLEANUPS.lock().unwrap().remove(cleanup_id) else {
-        return;
-    };
-    cleanup_path_now(path);
-}
-
-fn cleanup_path_now(path: PathBuf) {
-    match fs::remove_dir_all(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => {
-            log::warn!("failed to clean up {}: {e}", path.display());
-        }
-    }
-}
-
-fn next_cleanup_id() -> String {
-    let id = NEXT_CLEANUP_ID.fetch_add(1, Ordering::Relaxed);
-    format!("{PLUGIN_NAME}:cleanup:{id}")
-}
-
-fn file_name(path: &Path) -> Option<String> {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-}
-
-fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-
-    let mut value = bytes as f64;
-    let mut unit_index = 0usize;
-    while value >= 1024.0 && unit_index < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit_index += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit_index])
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn request(from: Option<&str>, is_admin: bool) -> CommandRequest {
-        CommandRequest {
-            args: String::new(),
-            to: None,
-            reply_to: None,
-            receiver: None,
-            from: from.map(str::to_string),
-            is_admin,
-        }
-    }
-
-    #[test]
-    fn wrapper_admin_flag_allows_admin_commands() {
-        let cfg = config::Config::default();
-        assert!(is_admin(&request(None, true), &cfg));
-    }
-
-    #[test]
-    fn config_admin_list_still_allows_admin_commands() {
-        let mut cfg = config::Config::default();
-        cfg.admin_users = vec![42];
-        assert!(is_admin(&request(Some("42"), false), &cfg));
-    }
-
-    #[test]
-    fn non_admin_is_denied() {
-        let cfg = config::Config::default();
-        assert!(!is_admin(&request(Some("42"), false), &cfg));
-    }
-}
+#[path = "../tests/unit/snb_compat_tests.rs"]
+mod snb_compat_tests;
