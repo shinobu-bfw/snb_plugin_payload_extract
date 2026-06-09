@@ -44,6 +44,11 @@ RUST_LOG = "debug"
 # Leave blank to support all partitions.
 # Example: ["boot", "vendor_boot", "system"]
 SUPPORTED_PARTITIONS = []
+
+# (Optional) Telegram user IDs allowed to run admin-only commands such as
+# /update and /status. In the Shinobu wrapper, adapter-provided
+# message.is_admin=true is also accepted.
+ADMIN_USERS = []
 ```
 
 ## Build

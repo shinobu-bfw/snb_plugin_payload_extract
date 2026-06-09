@@ -71,6 +71,7 @@ struct CommandRequest {
     reply_to: Option<String>,
     receiver: Option<String>,
     from: Option<String>,
+    is_admin: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -250,6 +251,7 @@ impl CommandRequest {
             reply_to: msg.and_then(|m| m.id.clone()),
             receiver: ctx.event.sender.clone(),
             from: msg.and_then(|m| m.from.clone()),
+            is_admin: msg.is_some_and(|m| m.is_admin),
         }
     }
 }
@@ -470,6 +472,10 @@ fn unsupported_partitions(partition: &str, supported: &[String]) -> Vec<String> 
 }
 
 fn is_admin(request: &CommandRequest, cfg: &config::Config) -> bool {
+    if request.is_admin {
+        return true;
+    }
+
     let Some(user_id) = request
         .from
         .as_deref()
@@ -479,7 +485,7 @@ fn is_admin(request: &CommandRequest, cfg: &config::Config) -> bool {
         return false;
     };
 
-    if !cfg.admin_users.is_empty() && cfg.admin_users.contains(&user_id) {
+    if cfg.admin_users.contains(&user_id) {
         return true;
     }
 
@@ -774,6 +780,7 @@ fn emit_content(
             to: request.to.clone(),
             at: Vec::new(),
             chat_type: None,
+            is_admin: false,
             delete_after,
         }),
         sender: None,
@@ -900,4 +907,39 @@ fn format_size(bytes: u64) -> String {
         unit_index += 1;
     }
     format!("{value:.1} {}", UNITS[unit_index])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(from: Option<&str>, is_admin: bool) -> CommandRequest {
+        CommandRequest {
+            args: String::new(),
+            to: None,
+            reply_to: None,
+            receiver: None,
+            from: from.map(str::to_string),
+            is_admin,
+        }
+    }
+
+    #[test]
+    fn wrapper_admin_flag_allows_admin_commands() {
+        let cfg = config::Config::default();
+        assert!(is_admin(&request(None, true), &cfg));
+    }
+
+    #[test]
+    fn config_admin_list_still_allows_admin_commands() {
+        let mut cfg = config::Config::default();
+        cfg.admin_users = vec![42];
+        assert!(is_admin(&request(Some("42"), false), &cfg));
+    }
+
+    #[test]
+    fn non_admin_is_denied() {
+        let cfg = config::Config::default();
+        assert!(!is_admin(&request(Some("42"), false), &cfg));
+    }
 }
