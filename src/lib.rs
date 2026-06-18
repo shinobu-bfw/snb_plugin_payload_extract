@@ -195,37 +195,37 @@ fn state() -> anyhow::Result<Arc<State>> {
         .context("PayloadExtract is not initialized")
 }
 
-#[command(name = "dump", aliases = ["dumper"])]
+#[command(name = "dump", aliases = ["dumper"], description = "Dump partition(s) from a payload URL")]
 fn dump(ctx: &CommandContext) -> anyhow::Result<()> {
     run_command(ctx, CommandKind::Dump)
 }
 
-#[command(name = "list")]
+#[command(name = "list", description = "List partition info of a payload URL")]
 fn list(ctx: &CommandContext) -> anyhow::Result<()> {
     run_command(ctx, CommandKind::List)
 }
 
-#[command(name = "meta", aliases = ["metadata"])]
+#[command(name = "meta", aliases = ["metadata"], description = "Show OTA metadata from the OTA zip")]
 fn meta(ctx: &CommandContext) -> anyhow::Result<()> {
     run_command(ctx, CommandKind::Meta)
 }
 
-#[command(name = "patch")]
+#[command(name = "patch", description = "Patch a boot partition with KernelSU")]
 fn patch(ctx: &CommandContext) -> anyhow::Result<()> {
     run_command(ctx, CommandKind::Patch)
 }
 
-#[command(name = "update")]
+#[command(name = "update", description = "Update ksud to the latest version")]
 fn update(ctx: &CommandContext) -> anyhow::Result<()> {
     run_command(ctx, CommandKind::Update)
 }
 
-#[command(name = "status")]
+#[command(name = "status", description = "Show current bot status")]
 fn status(ctx: &CommandContext) -> anyhow::Result<()> {
     run_command(ctx, CommandKind::Status)
 }
 
-#[command(name = "help")]
+#[command(name = "help", description = "Show the help message")]
 fn help(ctx: &CommandContext) -> anyhow::Result<()> {
     run_command(ctx, CommandKind::Help)
 }
