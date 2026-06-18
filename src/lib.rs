@@ -1,10 +1,10 @@
-//! Payload extract bot — a standard Shinobu plugin.
+//! A Shinobu plugin that extracts, lists, inspects, and KernelSU-patches
+//! Android partitions from a `payload.bin` / OTA URL.
 //!
-//! Downloads `payload.bin` / OTA zips from a URL and extracts, lists, inspects,
-//! or KernelSU-patches Android partitions, emitting the results back through the
-//! bot's adapter (e.g. the Telegram adapter). Patching shells out to `ksud`,
-//! which is downloaded on demand into the plugin's data directory and works on
-//! Linux, Android, macOS, and Windows (x86_64).
+//! Results are emitted back through the bot's adapter (e.g. the Telegram
+//! adapter). Patching shells out to `ksud`, downloaded on demand into the
+//! plugin's data directory; it runs on Linux, Android, macOS, and Windows
+//! (x86_64).
 
 use std::future::Future;
 use std::path::Path;
@@ -39,7 +39,7 @@ use status::{
     StatusHandle, delete_status_when_sent, finish_status_on_sent, resolve_status_message,
 };
 
-const PLUGIN_NAME: &str = "PayloadExtractBot";
+const PLUGIN_NAME: &str = "PayloadExtract";
 const CLEANUP_DELAY: Duration = Duration::from_secs(30 * 60);
 const HINT_DELETE_DELAY: Duration = Duration::from_secs(10);
 
@@ -98,9 +98,9 @@ enum CommandKind {
 static STATE: RwLock<Option<Arc<State>>> = RwLock::new(None);
 
 #[plugin]
-struct PayloadExtractBot;
+struct PayloadExtract;
 
-impl SnbPlugin for PayloadExtractBot {
+impl SnbPlugin for PayloadExtract {
     fn new() -> Self {
         Self
     }
@@ -170,14 +170,14 @@ fn init_state() -> anyhow::Result<State> {
 
 fn load_plugin_config() -> anyhow::Result<config::Config> {
     match context::plugin().load_config(Path::new("config.toml")) {
-        Ok(content) => toml::from_str(&content).context("failed to parse PayloadExtractBot config"),
+        Ok(content) => toml::from_str(&content).context("failed to parse PayloadExtract config"),
         Err(_) => {
             let default = config::Config::default();
             let content =
                 toml::to_string_pretty(&default).context("failed to render default config")?;
             context::plugin()
                 .write_config(Path::new("config.toml"), &content)
-                .context("failed to write default PayloadExtractBot config")?;
+                .context("failed to write default PayloadExtract config")?;
             log::warn!(
                 "config not found, default config written to configs/{PLUGIN_NAME}/config.toml"
             );
@@ -192,7 +192,7 @@ fn state() -> anyhow::Result<Arc<State>> {
         .unwrap()
         .as_ref()
         .cloned()
-        .context("PayloadExtractBot is not initialized")
+        .context("PayloadExtract is not initialized")
 }
 
 #[command(name = "dump", aliases = ["dumper"])]
@@ -234,7 +234,7 @@ fn run_command(ctx: &CommandContext, kind: CommandKind) -> anyhow::Result<()> {
     let request = CommandRequest::from_context(ctx);
     spawn_task(async move {
         if let Err(e) = execute_command(kind, request.clone()).await {
-            log::error!("PayloadExtractBot command failed: {e:#}");
+            log::error!("PayloadExtract command failed: {e:#}");
             emit_text(&request, format!("Command failed: {e:#}"));
         }
     });
@@ -462,11 +462,52 @@ fn unsupported_partitions(partition: &str, supported: &[String]) -> Vec<String> 
         .split(',')
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .filter(|name| !supported.iter().any(|supported| supported == *name))
+        .filter(|name| !supported.iter().any(|pattern| matches_pattern(pattern, name)))
         .map(ToOwned::to_owned)
         .collect()
+}
+
+/// Match a partition `name` against a whitelist `pattern` that may contain glob
+/// wildcards: `*` matches any (possibly empty) run of characters and `?` matches
+/// exactly one. A pattern with no wildcards is an exact, case-sensitive match,
+/// so plain entries like `boot` keep their original meaning.
+fn matches_pattern(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    let (mut pi, mut ni) = (0usize, 0usize);
+    // Backtrack point: the index just after the most recent `*`, and how much of
+    // `name` it has consumed so far. `None` means no `*` is open yet.
+    let (mut star_pi, mut star_ni): (Option<usize>, usize) = (None, 0);
+
+    while ni < name.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == name[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star_pi = Some(pi);
+            star_ni = ni;
+            pi += 1;
+        } else if let Some(sp) = star_pi {
+            // Mismatch under an open `*`: let it swallow one more character.
+            pi = sp + 1;
+            star_ni += 1;
+            ni = star_ni;
+        } else {
+            return false;
+        }
+    }
+
+    // Any leftover pattern must be all `*` to match the empty remainder.
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
 }
 
 #[cfg(test)]
 #[path = "../tests/unit/auth_tests.rs"]
 mod auth_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/partition_tests.rs"]
+mod partition_tests;

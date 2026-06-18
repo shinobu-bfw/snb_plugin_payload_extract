@@ -163,9 +163,8 @@ impl BaseTool {
 
 async fn find_latest_main_run(owner: &str, repo: &str) -> Result<(u64, String)> {
     let client = github_client()?;
-    // Workflow 43142245 builds ksud on `main`: the magica build that bundles
-    // magiskboot in-process and ships apple-darwin binaries. The release workflow
-    // (47761839) only builds version tags, whose ksud still needs external magiskboot.
+    // Workflow 43142245 is the `main` (magica) ksud build that bundles
+    // magiskboot in-process; the release workflow's ksud needs it externally.
     let runs_api = format!(
         "https://api.github.com/repos/{owner}/{repo}/actions/workflows/43142245/runs?status=success&event=push&branch=main&per_page=20"
     );

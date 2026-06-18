@@ -25,7 +25,7 @@ adapter (e.g. `snb_adapter_tg`) to talk to a chat platform.
 `/dump`, `/list`, and `/meta` are pure Rust and run anywhere.
 
 `/patch` and `/update` shell out to `ksud`, downloaded on demand from KernelSU CI
-into `data/PayloadExtractBot/bin/<os>/<arch>/`. Supported targets:
+into `data/PayloadExtract/bin/<os>/<arch>/`. Supported targets:
 
 | OS | Arch | ksud target |
 | --- | --- | --- |
@@ -39,16 +39,18 @@ are unavailable on Windows arm64.
 
 ## Configuration
 
-On first load a default config is written to `configs/PayloadExtractBot/config.toml`:
+On first load a default config is written to `configs/PayloadExtract/config.toml`:
 
 ```toml
-SUPPORTED_PARTITIONS = ["boot", "dtbo", "init_boot", "modem", "modemfirmware",
-    "recovery", "system_dlkm", "vbmeta", "vbmeta_system", "vbmeta_vendor",
-    "vendor_boot", "vendor_dlkm"]
+SUPPORTED_PARTITIONS = ["abl*", "boot", "dtbo", "init_boot", "modem",
+    "modemfirmware", "recovery", "system_dlkm", "vbmeta*", "vendor_boot",
+    "vendor_dlkm", "xbl*"]
 ADMIN_USERS = []
 ```
 
 - `SUPPORTED_PARTITIONS` — partitions allowed for `/dump` (empty = allow all).
+  Entries may use glob wildcards: `*` (any run of characters) and `?` (a single
+  character), e.g. `xbl*` allows `xbl_a`, `xbl_config_b`, ….
 - `ADMIN_USERS` — user IDs allowed to run `/update` and `/status` (an adapter that
   marks the sender as admin is also accepted).
 
