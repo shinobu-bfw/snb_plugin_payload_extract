@@ -1,84 +1,65 @@
-# Payload Extract Bot
+# snb_plugin_payload_extract
 
-A Telegram bot that can extract partitions from a `payload.bin` file from a given URL.
+A [Shinobu](https://github.com/shinobu-bfw/shinobu) plugin that extracts, lists,
+inspects, and KernelSU-patches Android partitions from a `payload.bin` / OTA zip
+URL. It is a port of [`payload_extract_bot-rs`](https://github.com/YuKongA/payload_extract_bot-rs)
+to a standard snb plugin.
 
-## Features
+The plugin emits and receives events through the bot runtime, so it needs an
+adapter (e.g. `snb_adapter_tg`) to talk to a chat platform.
 
-- List partitions from a URL.
-- Dump one or more partitions.
-- Patch boot partitions with KernelSU.
+## Commands
 
-## Usage
+| Command | Args | Notes |
+| --- | --- | --- |
+| `/dump` (`/dumper`) | `<url> <p1,p2,...>` | Extract partitions and upload them. |
+| `/list` | `<url>` | List partitions and sizes. |
+| `/meta` (`/metadata`) | `<url>` | Show OTA metadata. |
+| `/patch` | `<url> <partition> [kmi]` | KernelSU-patch `boot`(`b`) / `init_boot`(`ib`) / `vendor_boot`(`vb`). |
+| `/update` | — | Admin only. Re-download the latest `ksud`. |
+| `/status` | — | Admin only. Show host system info. |
+| `/help` | — | Show usage. |
 
-The bot understands the following commands:
+## Platforms
 
-| Command                             | Description                                                               | Example                        |
-|:------------------------------------|:--------------------------------------------------------------------------|:-------------------------------|
-| `/dump [url] [partitions]`          | Dump partition(s) from the URL. Partitions can be a comma-separated list. | `/dump <url> boot,vendor_boot` |
-| `/list [url]`                       | List all available partitions from the URL.                               | `/list <url>`                  |
-| `/patch [url] [partition]`        | Patch a boot partition with KernelSU.                                    | `/patch <url> boot`             |
-| `/help`                             | Show the help message.                                                    | `/help`                        |
+`/dump`, `/list`, and `/meta` are pure Rust and run anywhere.
 
-### Patch Command Details
+`/patch` and `/update` shell out to `ksud`, downloaded on demand from KernelSU CI
+into `data/PayloadExtractBot/bin/<os>/<arch>/`. Supported targets:
 
-- **`partition`**: `boot` (or `b`), `init_boot` (or `ib`), `vendor_boot` (or `vb`)
-- **`kmi`**: optional, kernel module interface
+| OS | Arch | ksud target |
+| --- | --- | --- |
+| linux | x86_64 / aarch64 | `*-unknown-linux-musl` |
+| android | x86_64 / aarch64 | `*-linux-android` |
+| macos | x86_64 / aarch64 | `*-apple-darwin` |
+| windows | x86_64 | `x86_64-pc-windows-gnu` |
+
+KernelSU CI does not publish a Windows aarch64 `ksud`, so `/patch` and `/update`
+are unavailable on Windows arm64.
 
 ## Configuration
 
-You need to create a `config.toml` file in the root directory. You can copy `config.toml.example` to get started.
+On first load a default config is written to `configs/PayloadExtractBot/config.toml`:
 
 ```toml
-# Telegram bot token
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-
-# (Optional) Telegram Bot API URL.
-# Required if you want to upload files larger than 50MB.
-API_URL = "https://api.telegram.org"
-
-# (Optional) Log level. Default is "debug".
-# Can be "trace", "debug", "info", "warn", "error".
-RUST_LOG = "debug"
-
-# (Optional) Whitelist of supported partitions.
-# Leave blank to support all partitions.
-# Example: ["boot", "vendor_boot", "system"]
-SUPPORTED_PARTITIONS = []
-
-# (Optional) Telegram user IDs allowed to run admin-only commands such as
-# /update and /status. In the Shinobu wrapper, adapter-provided
-# message.is_admin=true is also accepted.
+SUPPORTED_PARTITIONS = ["boot", "dtbo", "init_boot", "modem", "modemfirmware",
+    "recovery", "system_dlkm", "vbmeta", "vbmeta_system", "vbmeta_vendor",
+    "vendor_boot", "vendor_dlkm"]
 ADMIN_USERS = []
 ```
 
+- `SUPPORTED_PARTITIONS` — partitions allowed for `/dump` (empty = allow all).
+- `ADMIN_USERS` — user IDs allowed to run `/update` and `/status` (an adapter that
+  marks the sender as admin is also accepted).
+
+The Telegram token / API URL are configured on the adapter
+(`configs/TGAdapter/config.toml`), not here.
+
 ## Build
 
-This project is built with Rust.
-
-> Currently, only Linux on x86_64 and aarch64 is officially supported for building.
-
 ```shell
-cargo build --release
+cargo build-plugin payload_extract          # or: cargo xtask build-plugin payload_extract
 ```
 
-After building, you can find the executable at `target/release/payload_extract_bot`.
-
-## Running the Bot
-
-1. Make sure you have created and configured your `config.toml`.
-2. Run the bot:
-
-```shell
-./target/release/payload_extract_bot
-```
-
-## Thanks
-
-- [teloxide](https://github.com/teloxide/teloxide)
-- [payload_extract_rs](https://github.com/YuKongA/payload_extract_rs)
-- [kernelsu](https://github.com/tiann/KernelSU)
-- [magisk](https://github.com/topjohnwu/Magisk)
-
-## Contributing
-
-Contributions are welcome! Please feel free to open an issue or submit a pull request.
+This emits `snb_plugin_payload_extract.{so,dylib,dll}` into `target/`, ready to
+load like any other plugin.

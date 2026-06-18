@@ -1,7 +1,10 @@
-/bin
 /target
+/bin
 /tmp
 /.idea
-config.toml
 .claude
+config.toml
 *.bak
+*.so
+*.dll
+*.dylib

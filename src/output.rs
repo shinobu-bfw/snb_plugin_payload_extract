@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use payload_extract_bot::{patch_boot, payload};
+use crate::{patch_boot, payload};
 use snb_core::context;
 use snb_core::event::{ContentItem, Event, EventType, FileSource, Message, TextFormat};
 

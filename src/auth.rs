@@ -1,4 +1,4 @@
-use payload_extract_bot::config;
+use crate::config;
 
 use super::CommandRequest;
 

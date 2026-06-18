@@ -1,12 +1,11 @@
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
-use log::{debug, error, info};
+use log::{debug, info};
 use serde::Deserialize;
 use std::env::consts::{ARCH, OS};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
-use std::process::exit;
 use zip::ZipArchive;
 
 #[derive(Clone)]
@@ -146,7 +145,11 @@ impl BaseTool {
         }
 
         info!("Successfully downloaded, extracting {}...", self.name);
-        write_zip_entry(body, &format!("ksud{}", self.basis.suffix), self.path.clone())?;
+        write_zip_entry(
+            body,
+            &format!("ksud{}", self.basis.suffix),
+            self.path.clone(),
+        )?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -168,7 +171,10 @@ async fn find_latest_main_run(owner: &str, repo: &str) -> Result<(u64, String)> 
     );
     let resp = client.get(&runs_api).send().await?;
     if !resp.status().is_success() {
-        bail!("Failed to fetch latest ksud workflow runs: {}", resp.status());
+        bail!(
+            "Failed to fetch latest ksud workflow runs: {}",
+            resp.status()
+        );
     }
 
     let runs: GithubWorkflowRuns = resp
@@ -188,16 +194,7 @@ pub struct ToolManager {
     ksud: Ksud,
 }
 
-impl Default for ToolManager {
-    fn default() -> Self {
-        let basis = Basis::default();
-        let ksud = <Ksud as Tool>::from(basis);
-        Self { ksud }
-    }
-}
-
 impl ToolManager {
-    #[allow(dead_code)]
     pub fn try_with_bin_root(bin_root: PathBuf) -> Result<Self> {
         let basis = Basis::try_with_bin_root(bin_root)?;
         let ksud = <Ksud as Tool>::from(basis);
@@ -228,24 +225,13 @@ impl ToolManager {
     }
 }
 
-impl Default for Basis {
-    fn default() -> Self {
-        let bin_root = std::env::current_dir().unwrap().join("bin");
-        Self::try_with_bin_root(bin_root).unwrap_or_else(|e| {
-            let msg = e.to_string();
-            println!("{msg}");
-            error!("{msg}");
-            exit(1);
-        })
-    }
-}
-
 impl Basis {
     pub fn try_with_bin_root(bin_root: PathBuf) -> Result<Self> {
         let os = match OS {
             "linux" => "linux",
             "android" => "android",
             "macos" => "macos",
+            "windows" => "windows",
             other => bail!("Unsupported platform: {other}"),
         };
         let arch = match ARCH {
@@ -253,7 +239,14 @@ impl Basis {
             "aarch64" => "aarch64",
             other => bail!("Unsupported architecture: {other}"),
         };
-        let suffix = "";
+        // KernelSU CI only publishes a Windows ksud for x86_64
+        // (`x86_64-pc-windows-gnu`); there is no aarch64 Windows build.
+        if os == "windows" && arch != "x86_64" {
+            bail!("KernelSU provides no Windows ksud build for {arch}");
+        }
+        // Windows executables need the `.exe` extension; this is also the name
+        // of the binary inside the downloaded artifact zip (`ksud.exe`).
+        let suffix = if os == "windows" { ".exe" } else { "" };
 
         Ok(Self {
             os,
@@ -271,6 +264,7 @@ impl Basis {
             ("android", "aarch64") => "aarch64-linux-android",
             ("macos", "x86_64") => "x86_64-apple-darwin",
             ("macos", "aarch64") => "aarch64-apple-darwin",
+            ("windows", "x86_64") => "x86_64-pc-windows-gnu",
             _ => unreachable!("Unsupported platform and arch {}/{}", self.os, self.arch),
         }
     }

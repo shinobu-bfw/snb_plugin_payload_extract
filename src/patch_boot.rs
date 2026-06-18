@@ -38,11 +38,6 @@ impl PatchPartition {
 /// thread-safe so it can be handed to the blocking patch step.
 pub type ProgressFn = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// A progress callback that discards every update.
-pub fn no_progress() -> ProgressFn {
-    Arc::new(|_| {})
-}
-
 struct Patch {
     tm: Arc<crate::tool::ToolManager>,
     partition: PatchPartition,
@@ -108,7 +103,8 @@ impl Patch {
             .args([
                 "boot-patch",
                 "--boot",
-                boot.to_str().context("boot image path is not valid UTF-8")?,
+                boot.to_str()
+                    .context("boot image path is not valid UTF-8")?,
                 "--kmi",
                 self.kmi.as_str(),
                 "--out",
@@ -126,7 +122,10 @@ impl Patch {
 
         let file = dir.join(&patched_name);
         if !file.exists() {
-            bail!("ksud reported success but {} was not produced", file.display());
+            bail!(
+                "ksud reported success but {} was not produced",
+                file.display()
+            );
         }
         Ok(PatchedFile {
             path: file,
@@ -216,7 +215,11 @@ fn parse_kmi(kernel: &[u8]) -> Result<String> {
         .filter_map(|s| std::str::from_utf8(s).ok())
         .find_map(|s| {
             let caps = re.captures(s)?;
-            Some(format!("{}-{}", caps.get(2)?.as_str(), caps.get(1)?.as_str()))
+            Some(format!(
+                "{}-{}",
+                caps.get(2)?.as_str(),
+                caps.get(1)?.as_str()
+            ))
         })
         .context("could not find KMI in kernel; pass the KMI as the 3rd argument")
 }

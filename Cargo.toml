@@ -1,24 +1,39 @@
 [package]
-name = "payload_extract_bot"
+name = "snb_plugin_payload_extract"
 version = "0.1.3"
+authors = ["YuKongA"]
+license = "GPL-3.0-only"
+readme = "README.md"
+homepage = "https://github.com/YuKongA/payload_extract_bot-rs"
+repository = "https://github.com/YuKongA/payload_extract_bot-rs"
 edition = "2024"
+rust-version = "1.96.0"
 
 [workspace]
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
-teloxide = { version = "0", features = ["macros"] }
-log = "0"
-pretty_env_logger = "0"
-tokio = { version =  "1", features = ["rt-multi-thread", "macros"] }
-reqwest = { version = "0", features = ["json"] }
-serde = { version = "1", features = ["derive"] }
-toml = "1"
+snb_core = { path = "../../crates/snb_core" }
+snb_macros = { path = "../../crates/snb_macros" }
 anyhow = "1"
+log = "0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+toml = "1"
+serde = { version = "1", features = ["derive"] }
+reqwest = { version = "0", features = ["json"] }
 zip = "8"
-payload-extract = { git = "https://github.com/YuKongA/payload_extract_rs" }
-android-bootimg = { git = "https://github.com/5ec1cff/android_bootimg" }
 bytes = "1"
 regex = "1"
 sysinfo = "0"
 humantime = "2"
 uuid = { version = "1", features = ["v4"] }
+payload-extract = { git = "https://github.com/YuKongA/payload_extract_rs", rev = "387e1f5e70df43cc35d8668b1e60da08ba0db985" }
+android-bootimg = { git = "https://github.com/5ec1cff/android_bootimg", rev = "153423f6310fd4ae187e32da48e97b9fc613b783" }
+
+[profile.release]
+panic = "unwind"
+strip = "symbols"
+lto = "thin"
+codegen-units = 1

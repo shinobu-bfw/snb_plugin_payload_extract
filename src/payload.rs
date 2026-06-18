@@ -85,11 +85,10 @@ fn cleanup_temp_dir(dir: &PathBuf) {
 
 pub async fn read_ota_metadata(url: String) -> Result<String> {
     info!("Reading OTA metadata: {url}");
-    let data =
-        tokio::task::spawn_blocking(move || {
-            payload_extract::input::read_ota_metadata(&url, false, None)
-        })
-            .await??;
+    let data = tokio::task::spawn_blocking(move || {
+        payload_extract::input::read_ota_metadata(&url, false, None)
+    })
+    .await??;
 
     if data.is_empty() {
         return Ok("No META-INF/com/android/metadata entries found.".to_string());
