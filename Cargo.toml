@@ -16,6 +16,7 @@ toml = "1"
 anyhow = "1"
 zip = "8"
 payload-extract = { git = "https://github.com/YuKongA/payload_extract_rs" }
+android-bootimg = { git = "https://github.com/5ec1cff/android_bootimg" }
 bytes = "1"
 regex = "1"
 sysinfo = "0"

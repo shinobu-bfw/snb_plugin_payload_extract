@@ -3,8 +3,8 @@ use crate::tool::*;
 use anyhow::{Context, Result, bail};
 use log::info;
 use regex::Regex;
-use std::fs::{self, File};
-use std::io::{self, BufReader, Read};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -46,7 +46,8 @@ pub fn no_progress() -> ProgressFn {
 struct Patch {
     tm: Arc<crate::tool::ToolManager>,
     partition: PatchPartition,
-    manual_kmi: Option<String>,
+    kmi: String,
+    kernel_version: String,
     progress: ProgressFn,
 }
 
@@ -86,46 +87,32 @@ impl PatchedFile {
 }
 
 impl Patch {
-    fn patch(&self, dir: PathBuf) -> Result<PatchedFile> {
-        let patched_name = format!("kernelsu_patched_{}", self.partition.get_partition_name());
-
+    fn patch(&self, dir: &Path) -> Result<PatchedFile> {
         let ksud = self.tm.get_ksud().get();
-        let magiskboot = self.tm.get_magiskboot().get();
-        let (kmi, kernel_version) = match &self.manual_kmi {
-            Some(kmi) => {
-                info!("Using manual kmi: {}", kmi);
-                (kmi.clone(), "N/A".to_string())
-            }
-            None => {
-                (self.progress)("Parsing KMI from boot image...");
-                get_kmi(magiskboot.clone(), dir.clone(), "boot.img")?
-            }
-        };
-
-        let patched_name = format!("{patched_name}-{kmi}.img");
+        let partition = self.partition.get_partition_name();
+        let patched_name = format!("kernelsu_patched_{partition}-{}.img", self.kmi);
+        let boot = dir.join(format!("{partition}.img"));
 
         (self.progress)(&format!(
-            "Patching {} with KernelSU (KMI: {kmi})...",
-            self.partition.get_partition_name()
+            "Patching {partition} with KernelSU (KMI: {})...",
+            self.kmi
         ));
-
         info!(
-            "patching {} with kmi: {}, tool: {}",
-            self.partition.get_partition_name(),
-            kmi,
-            self.tm.get_ksud().get().display()
+            "patching {partition} with kmi: {}, tool: {}",
+            self.kmi,
+            ksud.display()
         );
 
-        let output = Command::new(ksud)
-            .current_dir(dir.clone())
+        // ksud embeds magiskboot (magica), so no external magiskboot is needed.
+        let output = Command::new(&ksud)
             .args([
                 "boot-patch",
-                "-b",
-                format!("{}.img", self.partition.get_partition_name()).as_str(),
-                "--magiskboot",
-                magiskboot.as_path().to_str().unwrap(),
+                "--boot",
+                boot.to_str().context("boot image path is not valid UTF-8")?,
                 "--kmi",
-                kmi.as_str(),
+                self.kmi.as_str(),
+                "--out",
+                dir.to_str().context("temp dir path is not valid UTF-8")?,
                 "--out-name",
                 patched_name.as_str(),
             ])
@@ -136,12 +123,15 @@ impl Patch {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        let mut file = dir;
-        file.push(&patched_name);
+
+        let file = dir.join(&patched_name);
+        if !file.exists() {
+            bail!("ksud reported success but {} was not produced", file.display());
+        }
         Ok(PatchedFile {
             path: file,
-            kmi,
-            kernel_version,
+            kmi: self.kmi.clone(),
+            kernel_version: self.kernel_version.clone(),
             patch_method: "KernelSU".to_string(),
             patch_version: self.tm.get_ksud_version(),
         })
@@ -156,25 +146,40 @@ pub async fn patch_boot(
     progress: ProgressFn,
 ) -> Result<PatchedFile> {
     info!("Patching boot: {url} {patch_partition}");
-    let patch = Patch {
-        partition: PatchPartition::from(&patch_partition)?,
-        manual_kmi,
-        tm,
-        progress,
-    };
-    let mut images = vec![patch.partition.get_partition_name().to_string()];
-    if patch.manual_kmi.is_none() {
+    let partition = PatchPartition::from(&patch_partition)?;
+    let target = partition.get_partition_name().to_string();
+
+    // init_boot/vendor_boot carry no kernel, so the KMI is read from boot.img
+    // (ksud can't auto-detect it for those). Pull boot.img too unless given a KMI.
+    let mut images = vec![target];
+    if manual_kmi.is_none() {
         images.push("boot".to_string());
     }
-    (patch.progress)("Downloading & extracting partitions...");
+    (progress)("Downloading & extracting partitions...");
     let (_, dir) = dump_partition(url.clone(), images.join(",")).await?;
-    match patch.patch(dir.clone()) {
-        Ok(patched) => Ok(patched),
-        Err(e) => {
-            cleanup_temp_dir(&dir);
-            Err(e)
+
+    let patched = match manual_kmi {
+        Some(kmi) => Ok((kmi, "N/A".to_string())),
+        None => {
+            (progress)("Reading KMI from boot image...");
+            detect_kmi(&dir.join("boot.img"))
         }
     }
+    .and_then(|(kmi, kernel_version)| {
+        Patch {
+            tm,
+            partition,
+            kmi,
+            kernel_version,
+            progress: progress.clone(),
+        }
+        .patch(&dir)
+    });
+
+    patched.map_err(|e| {
+        cleanup_temp_dir(&dir);
+        e
+    })
 }
 
 fn cleanup_temp_dir(dir: &PathBuf) {
@@ -185,98 +190,42 @@ fn cleanup_temp_dir(dir: &PathBuf) {
     }
 }
 
-fn get_kmi(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<(String, String)> {
-    let kernel_version = get_kernel_version(magiskboot.clone(), dir.clone(), image_name)?;
-    let file = File::open(dir.join("kernel")).context("Failed to open unpacked kernel")?;
-    let mut reader = BufReader::new(file);
-    let mut buffer = Vec::new();
+/// Read the kernel out of a boot image and derive (KMI, kernel version), the way
+/// ksud does (same `android-bootimg` crate). Needed for init_boot/vendor_boot,
+/// which carry no kernel of their own.
+fn detect_kmi(boot_img: &Path) -> Result<(String, String)> {
+    let data = fs::read(boot_img).with_context(|| format!("read {}", boot_img.display()))?;
+    let boot = android_bootimg::parser::BootImage::parse(&data).context("parse boot image")?;
+    let kernel = boot
+        .get_blocks()
+        .get_kernel()
+        .context("no kernel in boot image; pass the KMI as the 3rd argument")?;
+    let mut raw = Vec::new();
+    kernel.dump(&mut raw, false).context("decompress kernel")?;
 
-    reader.read_to_end(&mut buffer)?;
-
-    let kmi_re = Regex::new(r"(?:.* )?(\d+\.\d+)(?:\S+)?(android\d+)")?;
-    let mut kmi: Option<String> = None;
-
-    let printable_strings = buffer
-        .split(|&b| b == 0)
-        .filter_map(|slice| std::str::from_utf8(slice).ok());
-
-    for s in printable_strings {
-        if kmi.is_none()
-            && s.chars().all(|c| c.is_ascii_graphic() || c == ' ')
-            && let Some(caps) = kmi_re.captures(s)
-            && let (Some(kernel_version_part), Some(android_version)) = (caps.get(1), caps.get(2))
-        {
-            let kmi_str = format!(
-                "{}-{}",
-                android_version.as_str(),
-                kernel_version_part.as_str()
-            );
-            info!("Found kmi: {}", kmi_str);
-            kmi = Some(kmi_str);
-        }
-
-        if kmi.is_some() {
-            break;
-        }
-    }
-
-    match kmi {
-        Some(k) => Ok((k, kernel_version)),
-        None => Err(anyhow::anyhow!("Can't parse kmi from boot.img")),
-    }
+    let kmi = parse_kmi(&raw)?;
+    let kernel_version = parse_kernel_version(&raw).unwrap_or_else(|| "N/A".to_string());
+    Ok((kmi, kernel_version))
 }
 
-fn get_kernel_version(magiskboot: PathBuf, dir: PathBuf, image_name: &str) -> Result<String> {
-    info!(
-        "Getting kernel info from {} in {}, tool: {}",
-        image_name,
-        std::env::current_dir()?.display(),
-        magiskboot.display()
-    );
-    let output = Command::new(magiskboot)
-        .current_dir(&dir)
-        .args(["unpack", "-n", image_name])
-        .output()?;
-    if !output.status.success() {
-        bail!(
-            "magiskboot unpack failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    let file = File::open(dir.join("kernel")).context("Failed to open unpacked kernel")?;
-    let mut reader = BufReader::new(file);
-    let mut buffer = Vec::new();
-
-    reader.read_to_end(&mut buffer)?;
-
-    let kernel_version_re = Regex::new(r"Linux version (.*)")?;
-
-    let mut kernel_version: Option<String> = None;
-
-    let printable_strings = buffer
+/// e.g. kernel `5.10` on `android13` -> `android13-5.10`.
+fn parse_kmi(kernel: &[u8]) -> Result<String> {
+    let re = Regex::new(r"(\d+\.\d+)(?:\S+)?(android\d+)")?;
+    kernel
         .split(|&b| b == 0)
-        .filter_map(|slice| std::str::from_utf8(slice).ok());
+        .filter_map(|s| std::str::from_utf8(s).ok())
+        .find_map(|s| {
+            let caps = re.captures(s)?;
+            Some(format!("{}-{}", caps.get(2)?.as_str(), caps.get(1)?.as_str()))
+        })
+        .context("could not find KMI in kernel; pass the KMI as the 3rd argument")
+}
 
-    for s in printable_strings {
-        if kernel_version.is_none()
-            && let Some(caps) = kernel_version_re.captures(s)
-            && let Some(version) = caps.get(1)
-        {
-            let kv_str = version.as_str().trim();
-            if !kv_str.is_empty() {
-                info!("Found kernel version: {}", kv_str);
-                kernel_version = Some(kv_str.to_string());
-            }
-        }
-
-        if kernel_version.is_some() {
-            break;
-        }
-    }
-
-    match kernel_version {
-        Some(v) => Ok(v),
-        None => Err(anyhow::anyhow!("Can't parse kernel version from kernel")),
-    }
+fn parse_kernel_version(kernel: &[u8]) -> Option<String> {
+    let re = Regex::new(r"Linux version (.*)").ok()?;
+    kernel
+        .split(|&b| b == 0)
+        .filter_map(|s| std::str::from_utf8(s).ok())
+        .find_map(|s| Some(re.captures(s)?.get(1)?.as_str().trim().to_string()))
+        .filter(|v| !v.is_empty())
 }

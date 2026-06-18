@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use log::{debug, error, info};
-use regex::Regex;
 use serde::Deserialize;
 use std::env::consts::{ARCH, OS};
 use std::fs;
@@ -45,9 +44,6 @@ pub struct BaseTool {
 #[derive(Clone)]
 pub struct Ksud(BaseTool);
 
-#[derive(Clone)]
-pub struct Magiskboot(BaseTool);
-
 impl Tool for Ksud {
     fn from(basis: Basis) -> Self {
         let mut bin = basis.bin_root.join(basis.os).join(basis.arch);
@@ -73,31 +69,6 @@ impl Tool for Ksud {
     }
 }
 
-impl Tool for Magiskboot {
-    fn from(basis: Basis) -> Self {
-        let mut bin = basis.bin_root.join(basis.os).join(basis.arch);
-        bin.push(format!("{}{}", "magiskboot", basis.suffix));
-        Self(BaseTool {
-            basis: basis.clone(),
-            name: "magiskboot".to_string(),
-            path: bin,
-        })
-    }
-
-    fn get_name(&self) -> String {
-        self.0.name.clone()
-    }
-
-    fn get(&self) -> PathBuf {
-        self.0.path.clone()
-    }
-
-    async fn get_latest(&self) -> Result<()> {
-        info!("Getting latest magiskboot");
-        self.0.download_latest_magisk().await
-    }
-}
-
 fn github_client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(crate::utils::USER_AGENT)
@@ -114,18 +85,6 @@ async fn download_bytes(url: &str) -> Result<Bytes> {
 }
 
 #[derive(Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    assets: Vec<GithubAsset>,
-}
-
-#[derive(Deserialize)]
-struct GithubAsset {
-    name: String,
-    browser_download_url: String,
-}
-
-#[derive(Deserialize)]
 struct GithubWorkflowRuns {
     workflow_runs: Vec<GithubWorkflowRun>,
 }
@@ -134,38 +93,6 @@ struct GithubWorkflowRuns {
 struct GithubWorkflowRun {
     id: u64,
     head_branch: String,
-}
-
-async fn find_latest_release_asset(
-    owner: &str,
-    repo: &str,
-    asset_pattern: &Regex,
-) -> Result<(String, String)> {
-    let client = github_client()?;
-    let release_api = format!("https://api.github.com/repos/{owner}/{repo}/releases/latest");
-    let resp = client.get(&release_api).send().await?;
-    if !resp.status().is_success() {
-        bail!("Failed to fetch latest release metadata: {}", resp.status());
-    }
-
-    let release: GithubRelease = resp
-        .json()
-        .await
-        .with_context(|| format!("Failed to decode latest release metadata for {owner}/{repo}"))?;
-
-    let asset_url = release
-        .assets
-        .into_iter()
-        .find(|asset| asset_pattern.is_match(&asset.name))
-        .map(|asset| asset.browser_download_url)
-        .with_context(|| {
-            format!(
-                "Asset matching `{}` not found for {owner}/{repo}",
-                asset_pattern.as_str()
-            )
-        })?;
-
-    Ok((release.tag_name, asset_url))
 }
 
 fn write_zip_entry(bytes: Bytes, entry_name: &str, output_path: PathBuf) -> Result<()> {
@@ -202,34 +129,6 @@ impl BaseTool {
         Ok(())
     }
 
-    async fn download_latest_magisk(&self) -> Result<()> {
-        let asset_pattern = Regex::new(r"^Magisk-v.+\.apk$")?;
-        let (version, asset_url) =
-            find_latest_release_asset("topjohnwu", "Magisk", &asset_pattern).await?;
-
-        info!("Downloading latest magisk package...");
-        let body = download_bytes(&asset_url).await?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        write_zip_entry(
-            body.clone(),
-            &format!("lib/{}/libmagiskboot.so", self.basis.android_abi()),
-            self.path.clone(),
-        )?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(self.path.clone(), fs::Permissions::from_mode(0o755))?;
-        }
-
-        self.write_version(&version)?;
-        info!("Download latest {} success", self.name);
-        Ok(())
-    }
-
     async fn download_latest_ksud(&self) -> Result<()> {
         let (run_id, version) = find_latest_release_run("tiann", "KernelSU").await?;
         let artifact_name = format!("ksud-{}", self.basis.ksud_target());
@@ -247,11 +146,7 @@ impl BaseTool {
         }
 
         info!("Successfully downloaded, extracting {}...", self.name);
-        write_zip_entry(
-            body,
-            &format!("ksud{}", self.basis.suffix),
-            self.path.clone(),
-        )?;
+        write_zip_entry(body, &format!("ksud{}", self.basis.suffix), self.path.clone())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -291,15 +186,13 @@ async fn find_latest_release_run(owner: &str, repo: &str) -> Result<(u64, String
 #[derive(Clone)]
 pub struct ToolManager {
     ksud: Ksud,
-    magiskboot: Magiskboot,
 }
 
 impl Default for ToolManager {
     fn default() -> Self {
         let basis = Basis::default();
-        let ksud = <Ksud as Tool>::from(basis.clone());
-        let magiskboot = <Magiskboot as Tool>::from(basis.clone());
-        Self { ksud, magiskboot }
+        let ksud = <Ksud as Tool>::from(basis);
+        Self { ksud }
     }
 }
 
@@ -307,28 +200,22 @@ impl ToolManager {
     #[allow(dead_code)]
     pub fn try_with_bin_root(bin_root: PathBuf) -> Result<Self> {
         let basis = Basis::try_with_bin_root(bin_root)?;
-        let ksud = <Ksud as Tool>::from(basis.clone());
-        let magiskboot = <Magiskboot as Tool>::from(basis.clone());
-        Ok(Self { ksud, magiskboot })
+        let ksud = <Ksud as Tool>::from(basis);
+        Ok(Self { ksud })
     }
 
     pub async fn init(&self) -> Result<()> {
         debug!("Initializing tools");
         self.ksud.init().await?;
-        self.magiskboot.init().await?;
         Ok(())
     }
 
     pub async fn update(&self) -> Result<()> {
         debug!("Updating tools");
         self.ksud.get_latest().await?;
-        self.magiskboot.get_latest().await?;
         Ok(())
     }
 
-    pub fn get_magiskboot(&self) -> Magiskboot {
-        self.magiskboot.clone()
-    }
     pub fn get_ksud(&self) -> Ksud {
         self.ksud.clone()
     }
@@ -358,6 +245,7 @@ impl Basis {
         let os = match OS {
             "linux" => "linux",
             "android" => "android",
+            "macos" => "macos",
             other => bail!("Unsupported platform: {other}"),
         };
         let arch = match ARCH {
@@ -375,20 +263,14 @@ impl Basis {
         })
     }
 
-    pub fn android_abi(&self) -> &'static str {
-        match self.arch {
-            "x86_64" => "x86_64",
-            "aarch64" => "arm64-v8a",
-            _ => unreachable!("Unsupported arch: {}", self.arch),
-        }
-    }
-
     fn ksud_target(&self) -> &'static str {
         match (self.os, self.arch) {
             ("linux", "x86_64") => "x86_64-unknown-linux-musl",
             ("linux", "aarch64") => "aarch64-unknown-linux-musl",
             ("android", "x86_64") => "x86_64-linux-android",
             ("android", "aarch64") => "aarch64-linux-android",
+            ("macos", "x86_64") => "x86_64-apple-darwin",
+            ("macos", "aarch64") => "aarch64-apple-darwin",
             _ => unreachable!("Unsupported platform and arch {}/{}", self.os, self.arch),
         }
     }

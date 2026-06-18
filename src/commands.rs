@@ -29,7 +29,7 @@ pub enum Command {
     Help,
     #[command(description = "Start command")]
     Start,
-    #[command(description = "Update ksud and magiskboot tools")]
+    #[command(description = "Update ksud")]
     Update,
     #[command(description = "Show current bot status")]
     Status,

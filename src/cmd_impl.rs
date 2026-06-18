@@ -30,7 +30,7 @@ const HELP_MESSAGE: &str = r#"*[Payload dumper bot written in rust](https://gith
 >    `kmi`: optional
 >
 > `/update`
->   Update ksud and magiskboot tools to latest version
+>   Update ksud to latest version
 >
 > `/help`
 >   Show this help msg\."#;

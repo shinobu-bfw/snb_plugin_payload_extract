@@ -54,7 +54,7 @@ partition: boot(b), init_boot(ib), vendor_boot(vb)
 kmi: optional
 
 <code>/update</code>
-Update ksud and magiskboot tools to latest version
+Update ksud to latest version
 
 <code>/status</code>
 Show current bot status

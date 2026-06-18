@@ -36,7 +36,7 @@ pub async fn dump_partition(
         info!("Dumping partitions to {}", temp_dir.display());
 
         let result: Result<Vec<PartitionInfo>> = (|| {
-            let payload = open_for_extract(&url, &partitions, false)?;
+            let payload = open_for_extract(&url, &partitions, false, None)?;
 
             let files = payload
                 .partitions()
@@ -56,6 +56,7 @@ pub async fn dump_partition(
                 quiet: true,
                 source_dir: None,
                 out_config: None,
+                progress: None,
             };
 
             extract_partitions(&payload, &temp_dir, &partitions, &config)?;
@@ -85,7 +86,9 @@ fn cleanup_temp_dir(dir: &PathBuf) {
 pub async fn read_ota_metadata(url: String) -> Result<String> {
     info!("Reading OTA metadata: {url}");
     let data =
-        tokio::task::spawn_blocking(move || payload_extract::input::read_ota_metadata(&url, false))
+        tokio::task::spawn_blocking(move || {
+            payload_extract::input::read_ota_metadata(&url, false, None)
+        })
             .await??;
 
     if data.is_empty() {
@@ -178,7 +181,7 @@ fn push_device_state(out: &mut String, d: &DeviceState, prefix: &str) {
 
 pub async fn list_image(url: String) -> Result<String> {
     info!("Listing image: {url}");
-    let payload = tokio::task::spawn_blocking(move || open(&url, false)).await??;
+    let payload = tokio::task::spawn_blocking(move || open(&url, false, None)).await??;
     let partitions = payload.partitions();
     let partitions_str = partitions
         .iter()
