@@ -130,7 +130,7 @@ impl BaseTool {
     }
 
     async fn download_latest_ksud(&self) -> Result<()> {
-        let (run_id, version) = find_latest_release_run("tiann", "KernelSU").await?;
+        let (run_id, version) = find_latest_main_run("tiann", "KernelSU").await?;
         let artifact_name = format!("ksud-{}", self.basis.ksud_target());
         let asset_url = format!(
             "https://nightly.link/tiann/KernelSU/actions/runs/{run_id}/{artifact_name}.zip"
@@ -158,29 +158,29 @@ impl BaseTool {
     }
 }
 
-async fn find_latest_release_run(owner: &str, repo: &str) -> Result<(u64, String)> {
+async fn find_latest_main_run(owner: &str, repo: &str) -> Result<(u64, String)> {
     let client = github_client()?;
+    // Workflow 43142245 builds ksud on `main`: the magica build that bundles
+    // magiskboot in-process and ships apple-darwin binaries. The release workflow
+    // (47761839) only builds version tags, whose ksud still needs external magiskboot.
     let runs_api = format!(
-        "https://api.github.com/repos/{owner}/{repo}/actions/workflows/47761839/runs?status=success&event=push&per_page=20"
+        "https://api.github.com/repos/{owner}/{repo}/actions/workflows/43142245/runs?status=success&event=push&branch=main&per_page=20"
     );
     let resp = client.get(&runs_api).send().await?;
     if !resp.status().is_success() {
-        bail!(
-            "Failed to fetch latest release workflow runs: {}",
-            resp.status()
-        );
+        bail!("Failed to fetch latest ksud workflow runs: {}", resp.status());
     }
 
     let runs: GithubWorkflowRuns = resp
         .json()
         .await
-        .with_context(|| format!("Failed to decode release workflow runs for {owner}/{repo}"))?;
+        .with_context(|| format!("Failed to decode ksud workflow runs for {owner}/{repo}"))?;
 
     runs.workflow_runs
         .into_iter()
-        .find(|run| run.head_branch.starts_with('v'))
+        .find(|run| run.head_branch == "main")
         .map(|run| (run.id, run.head_branch))
-        .context("No successful KernelSU release workflow run found")
+        .context("No successful KernelSU main workflow run found")
 }
 
 #[derive(Clone)]
