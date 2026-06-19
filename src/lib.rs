@@ -246,10 +246,10 @@ impl CommandRequest {
         let msg = ctx.event.message.as_ref();
         Self {
             args: ctx.args.to_string(),
-            to: msg.and_then(|m| m.to.clone()),
+            to: msg.map(|m| m.chat_id().to_string()),
             reply_to: msg.and_then(|m| m.id.clone()),
-            receiver: ctx.event.sender.clone(),
-            from: msg.and_then(|m| m.from.clone()),
+            receiver: ctx.event.reply_plugin.clone(),
+            from: msg.and_then(|m| m.sender_id().map(str::to_string)),
             is_admin: msg.is_some_and(|m| m.is_admin),
         }
     }

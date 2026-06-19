@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::{patch_boot, payload};
 use snb_core::context;
-use snb_core::event::{ContentItem, Event, EventType, FileSource, Message, TextFormat};
+use snb_core::event::{Chat, ContentItem, Event, EventType, FileSource, Message, TextFormat};
 
 use super::{CommandRequest, HINT_DELETE_DELAY, PLUGIN_NAME};
 
@@ -130,15 +130,12 @@ pub(super) fn emit_content(
             id,
             reply_to: request.reply_to.clone(),
             content,
-            from: None,
-            to: request.to.clone(),
-            at: Vec::new(),
-            chat_type: None,
-            is_admin: false,
+            chat: request.to.clone().map(Chat::new).unwrap_or_default(),
             delete_after,
+            ..Default::default()
         }),
-        sender: None,
-        receiver: request.receiver.clone(),
+        reply_plugin: None,
+        target_plugin: request.receiver.clone(),
     };
     context::bot().emit_event(event);
 }

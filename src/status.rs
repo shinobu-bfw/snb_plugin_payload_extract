@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 use snb_core::context;
-use snb_core::event::Event;
+use snb_core::event::{Chat, Event};
 
 use super::output::{emit_content, text_item};
 use super::{CommandRequest, PLUGIN_NAME};
@@ -97,18 +97,18 @@ impl StatusHandle {
     fn emit_edit(&self, platform_id: &str, text: String) {
         let mut event = Event::message_edit(PLUGIN_NAME, platform_id, text, None);
         if let Some(message) = event.message.as_mut() {
-            message.to = self.to.clone();
+            message.chat = self.to.clone().map(Chat::new).unwrap_or_default();
         }
-        event.receiver = self.receiver.clone();
+        event.target_plugin = self.receiver.clone();
         context::bot().emit_event(event);
     }
 
     fn emit_delete(&self, platform_id: &str) {
         let mut event = Event::message_delete(PLUGIN_NAME, platform_id);
         if let Some(message) = event.message.as_mut() {
-            message.to = self.to.clone();
+            message.chat = self.to.clone().map(Chat::new).unwrap_or_default();
         }
-        event.receiver = self.receiver.clone();
+        event.target_plugin = self.receiver.clone();
         context::bot().emit_event(event);
     }
 }
