@@ -18,7 +18,6 @@ adapter (e.g. `snb_adapter_tg`) to talk to a chat platform.
 | `/patch` | `<url> <partition> [kmi]` | KernelSU-patch `boot`(`b`) / `init_boot`(`ib`) / `vendor_boot`(`vb`). |
 | `/update` | — | Admin only. Re-download the latest `ksud`. |
 | `/status` | — | Admin only. Show host system info. |
-| `/help` | — | Show usage. |
 
 ## Platforms
 

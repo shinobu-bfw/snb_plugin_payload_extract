@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use snb_core::command::CommandContext;
 use snb_core::context::{self, BotContext};
-use snb_core::event::{Event, EventType, TextFormat};
+use snb_core::event::{Event, EventType};
 use snb_core::plugin::{PluginType, SnbPlugin, Version};
 use snb_macros::{command, plugin};
 
@@ -31,7 +31,7 @@ mod utils;
 use auth::is_admin;
 use cleanup::{cleanup_path_now, cleanup_registered_path, register_cleanup_path};
 use output::{
-    dump_caption_markdown, emit_file_with_caption, emit_files_with_caption, emit_formatted_text,
+    dump_caption_markdown, emit_file_with_caption, emit_files_with_caption,
     emit_html_blockquote, emit_status_text, emit_temporary_text, emit_text, file_name,
     patch_caption_markdown,
 };
@@ -42,32 +42,6 @@ use status::{
 const PLUGIN_NAME: &str = "PayloadExtract";
 const CLEANUP_DELAY: Duration = Duration::from_secs(30 * 60);
 const HINT_DELETE_DELAY: Duration = Duration::from_secs(10);
-
-const HELP_MESSAGE: &str = r#"<b><a href="https://github.com/kmiit/payload_dump_bot-rs">Payload dumper bot written in rust</a>.</b>
-
-<blockquote expandable><b>Usage:</b>
-<code>/dump [url] [partition1&lt;,partition2,partition3...&gt;]</code>
-Dump partition(s) from url
-
-<code>/list [url]</code>
-List partition info of url
-
-<code>/meta [url]</code>
-Show OTA metadata from the OTA zip
-
-<code>/patch [url] [partition] [kmi]</code>
-Patch a boot partition with KernelSU
-partition: boot(b), init_boot(ib), vendor_boot(vb)
-kmi: optional
-
-<code>/update</code>
-Update ksud to latest version
-
-<code>/status</code>
-Show current bot status
-
-<code>/help</code>
-Show this help msg.</blockquote>"#;
 
 struct State {
     cfg: Arc<config::Config>,
@@ -92,7 +66,6 @@ enum CommandKind {
     Patch,
     Update,
     Status,
-    Help,
 }
 
 static STATE: RwLock<Option<Arc<State>>> = RwLock::new(None);
@@ -225,11 +198,6 @@ fn status(ctx: &CommandContext) -> anyhow::Result<()> {
     run_command(ctx, CommandKind::Status)
 }
 
-#[command(name = "help", description = "Show the help message")]
-fn help(ctx: &CommandContext) -> anyhow::Result<()> {
-    run_command(ctx, CommandKind::Help)
-}
-
 fn run_command(ctx: &CommandContext, kind: CommandKind) -> anyhow::Result<()> {
     let request = CommandRequest::from_context(ctx);
     spawn_task(async move {
@@ -264,10 +232,6 @@ where
 
 async fn execute_command(kind: CommandKind, request: CommandRequest) -> anyhow::Result<()> {
     match kind {
-        CommandKind::Help => {
-            emit_formatted_text(&request, HELP_MESSAGE, TextFormat::Html);
-            Ok(())
-        }
         CommandKind::Dump => dump_command(request).await,
         CommandKind::List => list_command(request).await,
         CommandKind::Meta => meta_command(request).await,
