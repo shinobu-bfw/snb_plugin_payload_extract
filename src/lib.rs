@@ -6,7 +6,6 @@
 //! plugin's data directory; it runs on Linux, Android, macOS, and Windows
 //! (x86_64).
 
-use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -199,7 +198,7 @@ fn status(ctx: &CommandContext) -> anyhow::Result<()> {
 
 fn run_command(ctx: &CommandContext, kind: CommandKind) -> anyhow::Result<()> {
     let request = CommandRequest::from_context(ctx);
-    spawn_task(async move {
+    snb_core::task::spawn(async move {
         if let Err(e) = execute_command(kind, request.clone()).await {
             log::error!("PayloadExtract command failed: {e:#}");
             emit_text(&request, format!("Command failed: {e:#}"));
@@ -220,13 +219,6 @@ impl CommandRequest {
             is_admin: msg.is_some_and(|m| m.is_admin),
         }
     }
-}
-
-fn spawn_task<F>(future: F)
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    std::thread::spawn(move || snb_core::adapter::run_async(future));
 }
 
 async fn execute_command(kind: CommandKind, request: CommandRequest) -> anyhow::Result<()> {

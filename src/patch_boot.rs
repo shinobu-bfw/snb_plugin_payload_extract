@@ -158,23 +158,40 @@ pub async fn patch_boot(
     (progress)("Downloading & extracting partitions...");
     let (_, dir) = dump_partition(url.clone(), images.join(",")).await?;
 
-    let patched = match manual_kmi {
-        Some(kmi) => Ok((kmi, "N/A".to_string())),
-        None => {
-            (progress)("Reading KMI from boot image...");
-            detect_kmi(&dir.join("boot.img"))
-        }
+    // Everything below (KMI detection + the ksud subprocess) shares one error
+    // path: on any failure, the caller must still clean up `dir`. Run it as a
+    // single sub-future so `?` inside stays local to this block instead of
+    // bypassing the `cleanup_temp_dir` below.
+    let patched = async {
+        let (kmi, kernel_version) = match manual_kmi {
+            Some(kmi) => (kmi, "N/A".to_string()),
+            None => {
+                (progress)("Reading KMI from boot image...");
+                detect_kmi(&dir.join("boot.img"))?
+            }
+        };
+
+        // ksud shells out to a real subprocess (`Command::output()`), which
+        // blocks the calling thread until it exits. Commands now run as async
+        // tasks on snb_core's shared runtime, so blocking there would starve
+        // other tasks and can't be cancelled by its shutdown drain. Move the
+        // blocking call onto tokio's blocking pool instead.
+        let dir_for_patch = dir.clone();
+        let progress_for_patch = progress.clone();
+        tokio::task::spawn_blocking(move || {
+            Patch {
+                tm,
+                partition,
+                kmi,
+                kernel_version,
+                progress: progress_for_patch,
+            }
+            .patch(&dir_for_patch)
+        })
+        .await
+        .context("patch task panicked")?
     }
-    .and_then(|(kmi, kernel_version)| {
-        Patch {
-            tm,
-            partition,
-            kmi,
-            kernel_version,
-            progress: progress.clone(),
-        }
-        .patch(&dir)
-    });
+    .await;
 
     patched.map_err(|e| {
         cleanup_temp_dir(&dir);
