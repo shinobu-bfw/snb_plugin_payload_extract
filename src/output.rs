@@ -37,17 +37,6 @@ pub(super) fn emit_text(request: &CommandRequest, text: impl Into<String>) {
     }
 }
 
-pub(super) fn emit_formatted_text(
-    request: &CommandRequest,
-    text: impl Into<String>,
-    format: TextFormat,
-) {
-    let text = text.into();
-    for chunk in split_message(&text) {
-        emit_content(request, None, None, vec![text_item(chunk, Some(format))]);
-    }
-}
-
 pub(super) fn emit_html_blockquote(request: &CommandRequest, text: impl Into<String>) {
     let text = text.into();
     for chunk in split_message(&text) {
