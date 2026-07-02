@@ -98,7 +98,8 @@ impl Patch {
             ksud.display()
         );
 
-        // ksud embeds magiskboot (magica), so no external magiskboot is needed.
+        // ksud >= v3.2.5 boot-patches via a pure-Rust bootimg crate (magiskboot
+        // was removed upstream), so no external magiskboot is needed.
         let output = Command::new(&ksud)
             .args([
                 "boot-patch",

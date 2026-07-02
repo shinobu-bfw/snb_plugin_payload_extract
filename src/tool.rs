@@ -76,14 +76,14 @@ impl Tool for Ksud {
     }
 }
 
-fn github_client() -> Result<reqwest::Client> {
+fn download_client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(crate::utils::USER_AGENT)
         .build()?)
 }
 
 async fn download_bytes(url: &str) -> Result<Bytes> {
-    let client = github_client()?;
+    let client = download_client()?;
     let resp = client.get(url).send().await?;
     if !resp.status().is_success() {
         bail!("Failed to download asset: {}", resp.status());
