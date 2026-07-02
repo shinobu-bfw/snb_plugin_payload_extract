@@ -31,9 +31,8 @@ mod utils;
 use auth::is_admin;
 use cleanup::{cleanup_path_now, cleanup_registered_path, register_cleanup_path};
 use output::{
-    dump_caption_markdown, emit_file_with_caption, emit_files_with_caption,
-    emit_html_blockquote, emit_status_text, emit_temporary_text, emit_text, file_name,
-    patch_caption_markdown,
+    dump_caption_markdown, emit_file_with_caption, emit_files_with_caption, emit_html_blockquote,
+    emit_status_text, emit_temporary_text, emit_text, file_name, patch_caption_markdown,
 };
 use status::{
     StatusHandle, delete_status_when_sent, finish_status_on_sent, resolve_status_message,
@@ -401,7 +400,12 @@ async fn update_command(request: CommandRequest) -> anyhow::Result<()> {
 
     emit_status_text(&request, "Updating tools...");
     match state.tm.update().await {
-        Ok(()) => emit_temporary_text(&request, "Tools updated successfully!"),
+        Ok(tool::UpdateOutcome::Updated(tag)) => {
+            emit_temporary_text(&request, format!("Tools updated to {tag}!"));
+        }
+        Ok(tool::UpdateOutcome::AlreadyLatest(tag)) => {
+            emit_temporary_text(&request, format!("Tools already latest ({tag})."));
+        }
         Err(e) => emit_text(&request, format!("Failed to update tools: {e:#}")),
     }
     Ok(())
@@ -426,7 +430,11 @@ fn unsupported_partitions(partition: &str, supported: &[String]) -> Vec<String> 
         .split(',')
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .filter(|name| !supported.iter().any(|pattern| matches_pattern(pattern, name)))
+        .filter(|name| {
+            !supported
+                .iter()
+                .any(|pattern| matches_pattern(pattern, name))
+        })
         .map(ToOwned::to_owned)
         .collect()
 }

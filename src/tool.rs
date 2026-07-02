@@ -1,12 +1,20 @@
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use log::{debug, info};
-use serde::Deserialize;
 use std::env::consts::{ARCH, OS};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use zip::ZipArchive;
+
+const KSU_OWNER_REPO: &str = "tiann/KernelSU";
+
+/// Outcome of a ksud update check, so `/update` can tell "fetched a new
+/// version" apart from "nothing to do".
+pub enum UpdateOutcome {
+    Updated(String),
+    AlreadyLatest(String),
+}
 
 #[derive(Clone)]
 pub struct Basis {
@@ -27,10 +35,10 @@ pub trait Tool {
             info!("Done");
             Ok(())
         } else {
-            self.get_latest().await
+            self.get_latest().await.map(|_| ())
         }
     }
-    async fn get_latest(&self) -> Result<()>;
+    async fn get_latest(&self) -> Result<UpdateOutcome>;
 }
 
 #[derive(Clone)]
@@ -62,7 +70,7 @@ impl Tool for Ksud {
         self.0.path.clone()
     }
 
-    async fn get_latest(&self) -> Result<()> {
+    async fn get_latest(&self) -> Result<UpdateOutcome> {
         info!("Getting latest ksud");
         self.0.download_latest_ksud().await
     }
@@ -83,15 +91,48 @@ async fn download_bytes(url: &str) -> Result<Bytes> {
     Ok(resp.bytes().await?)
 }
 
-#[derive(Deserialize)]
-struct GithubWorkflowRuns {
-    workflow_runs: Vec<GithubWorkflowRun>,
+/// Resolve the latest KernelSU release tag WITHOUT GitHub API quota:
+/// `releases/latest` answers with a 302 whose Location ends in
+/// `/releases/tag/<TAG>`.
+async fn latest_release_tag() -> Result<String> {
+    let client = reqwest::Client::builder()
+        .user_agent(crate::utils::USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let url = format!("https://github.com/{KSU_OWNER_REPO}/releases/latest");
+    let resp = client.get(&url).send().await?;
+    if !resp.status().is_redirection() {
+        bail!("expected a redirect from {url}, got {}", resp.status());
+    }
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .context("releases/latest redirect carries no Location header")?;
+    tag_from_location(location)
 }
 
-#[derive(Deserialize)]
-struct GithubWorkflowRun {
-    id: u64,
-    head_branch: String,
+/// Extract `<TAG>` from a `…/releases/tag/<TAG>` Location value. Pure so it is
+/// unit-testable; strips trailing slash, query, and fragment.
+fn tag_from_location(location: &str) -> Result<String> {
+    let tag = location
+        .split_once("/releases/tag/")
+        .map(|(_, rest)| rest)
+        .unwrap_or("")
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    if tag.is_empty() {
+        bail!("cannot extract a release tag from Location: {location:?}");
+    }
+    Ok(tag.to_string())
+}
+
+/// nightly.link's tag-addressed artifact form for the Release workflow —
+/// verified live 2026-07-02; no run-id lookup and no API auth needed.
+fn artifact_url(tag: &str, target: &str) -> String {
+    format!("https://nightly.link/{KSU_OWNER_REPO}/workflows/release/{tag}/ksud-{target}.zip")
 }
 
 fn write_zip_entry(bytes: Bytes, entry_name: &str, output_path: PathBuf) -> Result<()> {
@@ -128,18 +169,24 @@ impl BaseTool {
         Ok(())
     }
 
-    async fn download_latest_ksud(&self) -> Result<()> {
-        let (run_id, version) = find_latest_main_run("tiann", "KernelSU").await?;
-        let artifact_name = format!("ksud-{}", self.basis.ksud_target());
-        let asset_url = format!(
-            "https://nightly.link/tiann/KernelSU/actions/runs/{run_id}/{artifact_name}.zip"
-        );
+    async fn download_latest_ksud(&self) -> Result<UpdateOutcome> {
+        let tag = latest_release_tag().await?;
+        if self.path.exists() && self.read_version().as_deref() == Some(tag.as_str()) {
+            info!("{} already at {tag}", self.name);
+            return Ok(UpdateOutcome::AlreadyLatest(tag));
+        }
 
+        let url = artifact_url(&tag, self.basis.ksud_target());
         info!(
-            "Downloading latest {} package from release run {run_id}...",
+            "Downloading {} {tag} from the release workflow artifacts...",
             self.name
         );
-        let body = download_bytes(&asset_url).await?;
+        // ksud ≥ v3.2.5 patches standalone on desktop (magiskboot removed
+        // upstream); tag-run artifacts expire after 90 days — a 404 here means
+        // waiting for the next KernelSU release (accepted, no fallback).
+        let body = download_bytes(&url).await.with_context(|| {
+            format!("download {url} failed (expired 90-day artifact retention for {tag}?)")
+        })?;
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -155,37 +202,10 @@ impl BaseTool {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&self.path, fs::Permissions::from_mode(0o755))?;
         }
-        self.write_version(&version)?;
-        info!("Download latest {} success", self.name);
-        Ok(())
+        self.write_version(&tag)?;
+        info!("{} updated to {tag}", self.name);
+        Ok(UpdateOutcome::Updated(tag))
     }
-}
-
-async fn find_latest_main_run(owner: &str, repo: &str) -> Result<(u64, String)> {
-    let client = github_client()?;
-    // Workflow 43142245 is the `main` (magica) ksud build that bundles
-    // magiskboot in-process; the release workflow's ksud needs it externally.
-    let runs_api = format!(
-        "https://api.github.com/repos/{owner}/{repo}/actions/workflows/43142245/runs?status=success&event=push&branch=main&per_page=20"
-    );
-    let resp = client.get(&runs_api).send().await?;
-    if !resp.status().is_success() {
-        bail!(
-            "Failed to fetch latest ksud workflow runs: {}",
-            resp.status()
-        );
-    }
-
-    let runs: GithubWorkflowRuns = resp
-        .json()
-        .await
-        .with_context(|| format!("Failed to decode ksud workflow runs for {owner}/{repo}"))?;
-
-    runs.workflow_runs
-        .into_iter()
-        .find(|run| run.head_branch == "main")
-        .map(|run| (run.id, run.head_branch))
-        .context("No successful KernelSU main workflow run found")
 }
 
 #[derive(Clone)]
@@ -206,10 +226,9 @@ impl ToolManager {
         Ok(())
     }
 
-    pub async fn update(&self) -> Result<()> {
+    pub async fn update(&self) -> Result<UpdateOutcome> {
         debug!("Updating tools");
-        self.ksud.get_latest().await?;
-        Ok(())
+        self.ksud.get_latest().await
     }
 
     pub fn get_ksud(&self) -> Ksud {
@@ -268,3 +287,7 @@ impl Basis {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/tool_tests.rs"]
+mod tool_tests;

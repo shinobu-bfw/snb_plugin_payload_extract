@@ -16,15 +16,17 @@ adapter (e.g. `snb_adapter_tg`) to talk to a chat platform.
 | `/list` | `<url>` | List partitions and sizes. |
 | `/meta` (`/metadata`) | `<url>` | Show OTA metadata. |
 | `/patch` | `<url> <partition> [kmi]` | KernelSU-patch `boot`(`b`) / `init_boot`(`ib`) / `vendor_boot`(`vb`). |
-| `/update` | — | Admin only. Re-download the latest `ksud`. |
+| `/update` | — | Admin only. Update ksud to the latest KernelSU release (answers "already latest" when current). |
 | `/status` | — | Admin only. Show host system info. |
 
 ## Platforms
 
 `/dump`, `/list`, and `/meta` are pure Rust and run anywhere.
 
-`/patch` and `/update` shell out to `ksud`, downloaded on demand from KernelSU CI
-into `data/PayloadExtract/bin/<os>/<arch>/`. Supported targets:
+`/patch` and `/update` shell out to `ksud`, downloaded on demand from the KernelSU
+**release workflow's CI artifacts** (tag-pinned via nightly.link; needs the latest
+KernelSU release to be younger than GitHub's 90-day artifact retention) into
+`data/PayloadExtract/bin/<os>/<arch>/`. Supported targets:
 
 | OS | Arch | ksud target |
 | --- | --- | --- |
